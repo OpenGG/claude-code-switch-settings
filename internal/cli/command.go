@@ -130,12 +130,17 @@ func newSaveCommand(mgr *ccs.Manager, prompter Prompter) *cobra.Command {
 					if err != nil {
 						return err
 					}
+					name = strings.TrimSpace(name)
 					valid, vErr := mgr.ValidateSettingsName(name)
 					if !valid {
 						fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", vErr.Error())
 						continue
 					}
-					if exists, err := afero.Exists(mgr.FileSystem(), mgr.StoredSettingsPath(name)); err != nil {
+					path, err := mgr.StoredSettingsPath(name)
+					if err != nil {
+						return err
+					}
+					if exists, err := afero.Exists(mgr.FileSystem(), path); err != nil {
 						return err
 					} else if exists {
 						fmt.Fprintf(cmd.ErrOrStderr(), "Error: Settings '%s' already exists.\n", name)

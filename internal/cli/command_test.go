@@ -87,7 +87,11 @@ func TestListCommandOutput(t *testing.T) {
 	if err := mgr.SetActiveSettings("work"); err != nil {
 		t.Fatalf("set active: %v", err)
 	}
-	if err := afero.WriteFile(mgr.FileSystem(), mgr.StoredSettingsPath("work"), []byte("A"), 0o644); err != nil {
+	path, err := mgr.StoredSettingsPath("work")
+	if err != nil {
+		t.Fatalf("stored path: %v", err)
+	}
+	if err := afero.WriteFile(mgr.FileSystem(), path, []byte("A"), 0o644); err != nil {
 		t.Fatalf("write store: %v", err)
 	}
 
@@ -123,7 +127,10 @@ func TestListCommandUnsavedOutput(t *testing.T) {
 
 func TestUseCommandInteractive(t *testing.T) {
 	mgr := newTestCommandManager(t)
-	path := mgr.StoredSettingsPath("work")
+	path, err := mgr.StoredSettingsPath("work")
+	if err != nil {
+		t.Fatalf("stored path: %v", err)
+	}
 	if err := afero.WriteFile(mgr.FileSystem(), path, []byte("stored"), 0o644); err != nil {
 		t.Fatalf("write store: %v", err)
 	}
@@ -148,7 +155,10 @@ func TestUseCommandInteractive(t *testing.T) {
 
 func TestUseCommandArgument(t *testing.T) {
 	mgr := newTestCommandManager(t)
-	path := mgr.StoredSettingsPath("work")
+	path, err := mgr.StoredSettingsPath("work")
+	if err != nil {
+		t.Fatalf("stored path: %v", err)
+	}
 	if err := afero.WriteFile(mgr.FileSystem(), path, []byte("stored"), 0o644); err != nil {
 		t.Fatalf("write store: %v", err)
 	}
@@ -173,7 +183,10 @@ func TestUseCommandArgument(t *testing.T) {
 
 func TestSaveCommandOverwriteFlow(t *testing.T) {
 	mgr := newTestCommandManager(t)
-	path := mgr.StoredSettingsPath("personal")
+	path, err := mgr.StoredSettingsPath("personal")
+	if err != nil {
+		t.Fatalf("stored path: %v", err)
+	}
 	if err := afero.WriteFile(mgr.FileSystem(), path, []byte("old"), 0o644); err != nil {
 		t.Fatalf("write store: %v", err)
 	}
@@ -186,7 +199,9 @@ func TestSaveCommandOverwriteFlow(t *testing.T) {
 		confirms: []confirmResponse{{value: true}},
 	}
 	buf := &bytes.Buffer{}
-	cmd := newSaveCommand(mgr, prompter, buf)
+	cmd := newSaveCommand(mgr, prompter)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("RunE save: %v", err)
 	}
@@ -210,7 +225,9 @@ func TestSaveCommandNewValidation(t *testing.T) {
 		prompts: []promptResponse{{value: "my/settings"}, {value: "dev"}},
 	}
 	buf := &bytes.Buffer{}
-	cmd := newSaveCommand(mgr, prompter, buf)
+	cmd := newSaveCommand(mgr, prompter)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("RunE save new: %v", err)
 	}
@@ -218,7 +235,11 @@ func TestSaveCommandNewValidation(t *testing.T) {
 	if !strings.Contains(output, "invalid characters") {
 		t.Fatalf("expected validation error output, got %s", output)
 	}
-	exists, err := afero.Exists(mgr.FileSystem(), mgr.StoredSettingsPath("dev"))
+	devPath, err := mgr.StoredSettingsPath("dev")
+	if err != nil {
+		t.Fatalf("stored path: %v", err)
+	}
+	exists, err := afero.Exists(mgr.FileSystem(), devPath)
 	if err != nil {
 		t.Fatalf("exists dev: %v", err)
 	}
@@ -314,7 +335,7 @@ func TestPromptUISelect(t *testing.T) {
 	stdin := bytes.NewBufferString("")
 	pu := NewPromptUIWithIO(stdin, &nopWriteCloser{Writer: bytes.NewBuffer(nil)})
 	_, _, err := pu.Select("choose", []string{"first", "second"}, "")
-	if err == nil {
+	if err == nil || !errors.Is(err, ErrPromptCancelled) {
 		t.Fatalf("expected selection cancellation error")
 	}
 }
@@ -322,7 +343,7 @@ func TestPromptUISelect(t *testing.T) {
 func TestPromptUISelectWithDefault(t *testing.T) {
 	stdin := bytes.NewBufferString("")
 	pu := NewPromptUIWithIO(stdin, &nopWriteCloser{Writer: bytes.NewBuffer(nil)})
-	if _, _, err := pu.Select("choose", []string{"alpha", "beta"}, "beta"); err == nil {
+	if _, _, err := pu.Select("choose", []string{"alpha", "beta"}, "beta"); err == nil || !errors.Is(err, ErrPromptCancelled) {
 		t.Fatalf("expected selection cancellation error")
 	}
 }
@@ -330,7 +351,7 @@ func TestPromptUISelectWithDefault(t *testing.T) {
 func TestPromptUIPrompt(t *testing.T) {
 	stdin := bytes.NewBufferString("")
 	pu := NewPromptUIWithIO(stdin, &nopWriteCloser{Writer: bytes.NewBuffer(nil)})
-	if _, err := pu.Prompt("enter"); err == nil {
+	if _, err := pu.Prompt("enter"); err == nil || !errors.Is(err, ErrPromptCancelled) {
 		t.Fatalf("expected prompt cancellation error")
 	}
 }
@@ -338,7 +359,7 @@ func TestPromptUIPrompt(t *testing.T) {
 func TestPromptUIConfirm(t *testing.T) {
 	stdin := bytes.NewBufferString("")
 	pu := NewPromptUIWithIO(stdin, &nopWriteCloser{Writer: bytes.NewBuffer(nil)})
-	if ok, err := pu.Confirm("confirm", false); err == nil || ok {
+	if ok, err := pu.Confirm("confirm", false); err == nil || !errors.Is(err, ErrPromptCancelled) || ok {
 		t.Fatalf("expected confirm cancellation")
 	}
 }
@@ -346,7 +367,7 @@ func TestPromptUIConfirm(t *testing.T) {
 func TestPromptUIConfirmDefaultYes(t *testing.T) {
 	stdin := bytes.NewBufferString("")
 	pu := NewPromptUIWithIO(stdin, &nopWriteCloser{Writer: bytes.NewBuffer(nil)})
-	if _, err := pu.Confirm("confirm", true); err == nil {
+	if _, err := pu.Confirm("confirm", true); err == nil || !errors.Is(err, ErrPromptCancelled) {
 		t.Fatalf("expected confirm cancellation with default")
 	}
 }
@@ -386,7 +407,10 @@ func TestNewPromptUIDefaults(t *testing.T) {
 
 func TestSaveCommandOverwriteCancelled(t *testing.T) {
 	mgr := newTestCommandManager(t)
-	path := mgr.StoredSettingsPath("personal")
+	path, err := mgr.StoredSettingsPath("personal")
+	if err != nil {
+		t.Fatalf("stored path: %v", err)
+	}
 	if err := afero.WriteFile(mgr.FileSystem(), path, []byte("old"), 0o644); err != nil {
 		t.Fatalf("write store: %v", err)
 	}
@@ -398,7 +422,9 @@ func TestSaveCommandOverwriteCancelled(t *testing.T) {
 		confirms: []confirmResponse{{value: false}},
 	}
 	buf := &bytes.Buffer{}
-	cmd := newSaveCommand(mgr, prompter, buf)
+	cmd := newSaveCommand(mgr, prompter)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("RunE save cancel: %v", err)
 	}

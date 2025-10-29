@@ -46,20 +46,26 @@ func (p *PromptUI) Select(label string, items []string, defaultValue string) (in
 		Size:      10,
 		HideHelp:  true,
 		CursorPos: cursor,
+		Stdin:     p.stdin,
+		Stdout:    p.stdout,
 	}
 
 	idx, value, err := selectPrompt.Run()
 	if err != nil {
-		return idx, value, fmt.Errorf("selection cancelled: %w", err)
+		return idx, value, fmt.Errorf("%w: %v", ErrPromptCancelled, err)
 	}
 	return idx, value, nil
 }
 
 func (p *PromptUI) Prompt(label string) (string, error) {
-	prompt := promptui.Prompt{Label: label}
+	prompt := promptui.Prompt{
+		Label:  label,
+		Stdin:  p.stdin,
+		Stdout: p.stdout,
+	}
 	value, err := prompt.Run()
 	if err != nil {
-		return "", fmt.Errorf("input cancelled: %w", err)
+		return "", fmt.Errorf("%w: %v", ErrPromptCancelled, err)
 	}
 	return value, nil
 }
@@ -69,10 +75,16 @@ func (p *PromptUI) Confirm(label string, defaultYes bool) (bool, error) {
 	if defaultYes {
 		def = "Y"
 	}
-	prompt := promptui.Prompt{Label: label, IsConfirm: true, Default: def}
+	prompt := promptui.Prompt{
+		Label:     label,
+		IsConfirm: true,
+		Default:   def,
+		Stdin:     p.stdin,
+		Stdout:    p.stdout,
+	}
 	result, err := prompt.Run()
 	if err != nil {
-		return false, fmt.Errorf("confirmation cancelled: %w", err)
+		return false, fmt.Errorf("%w: %v", ErrPromptCancelled, err)
 	}
 	return strings.EqualFold(result, "y") || (result == "" && defaultYes), nil
 }

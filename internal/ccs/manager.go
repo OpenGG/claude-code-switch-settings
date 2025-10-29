@@ -170,6 +170,17 @@ func (m *Manager) ValidateSettingsName(name string) (bool, error) {
 	return true, nil
 }
 
+func (m *Manager) normalizeSettingsName(name string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if ok, err := m.ValidateSettingsName(trimmed); !ok {
+		if err != nil {
+			return "", err
+		}
+		return "", errors.New("invalid settings name")
+	}
+	return trimmed, nil
+}
+
 // copyFile copies a file from src to dst, overwriting the destination.
 func (m *Manager) copyFile(src, dst string) error {
 	source, err := m.fs.Open(src)
@@ -211,11 +222,15 @@ func (m *Manager) Use(name string) error {
 	if err := m.InitInfra(); err != nil {
 		return err
 	}
-	targetPath := m.storedSettingsPath(name)
+	normalized, err := m.normalizeSettingsName(name)
+	if err != nil {
+		return err
+	}
+	targetPath := m.storedSettingsPath(normalized)
 	if exists, err := afero.Exists(m.fs, targetPath); err != nil {
 		return fmt.Errorf("failed to inspect target settings: %w", err)
 	} else if !exists {
-		return fmt.Errorf("settings '%s' not found", name)
+		return fmt.Errorf("settings '%s' not found", normalized)
 	}
 	if err := m.backupFile(m.activeSettingsPath()); err != nil {
 		return err
@@ -223,7 +238,7 @@ func (m *Manager) Use(name string) error {
 	if err := m.copyFile(targetPath, m.activeSettingsPath()); err != nil {
 		return fmt.Errorf("failed to copy settings: %w", err)
 	}
-	if err := m.SetActiveSettings(name); err != nil {
+	if err := m.SetActiveSettings(normalized); err != nil {
 		return fmt.Errorf("failed to update active settings: %w", err)
 	}
 	return nil
@@ -240,14 +255,18 @@ func (m *Manager) Save(targetName string) error {
 	} else if !exists {
 		return errors.New("settings.json not found. Nothing to save.")
 	}
-	targetPath := m.storedSettingsPath(targetName)
+	normalized, err := m.normalizeSettingsName(targetName)
+	if err != nil {
+		return err
+	}
+	targetPath := m.storedSettingsPath(normalized)
 	if err := m.backupFile(targetPath); err != nil {
 		return err
 	}
 	if err := m.copyFile(activePath, targetPath); err != nil {
 		return fmt.Errorf("failed to store settings: %w", err)
 	}
-	if err := m.SetActiveSettings(targetName); err != nil {
+	if err := m.SetActiveSettings(normalized); err != nil {
 		return fmt.Errorf("failed to update active settings: %w", err)
 	}
 	return nil
@@ -395,8 +414,12 @@ func (m *Manager) FileSystem() afero.Fs {
 }
 
 // StoredSettingsPath returns the full path to a stored settings file.
-func (m *Manager) StoredSettingsPath(name string) string {
-	return m.storedSettingsPath(name)
+func (m *Manager) StoredSettingsPath(name string) (string, error) {
+	normalized, err := m.normalizeSettingsName(name)
+	if err != nil {
+		return "", err
+	}
+	return m.storedSettingsPath(normalized), nil
 }
 
 // SetNow overrides the clock used by the manager.

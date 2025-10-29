@@ -1,6 +1,7 @@
 package ccs
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -273,12 +274,72 @@ func TestSaveCreatesNewSettings(t *testing.T) {
 	if err := mgr.Save("dev"); err != nil {
 		t.Fatalf("save new: %v", err)
 	}
-	content, err := afero.ReadFile(mgr.fs, mgr.StoredSettingsPath("dev"))
+	path, err := mgr.StoredSettingsPath("dev")
+	if err != nil {
+		t.Fatalf("stored path: %v", err)
+	}
+	content, err := afero.ReadFile(mgr.fs, path)
 	if err != nil {
 		t.Fatalf("read dev: %v", err)
 	}
 	if string(content) != "data" {
 		t.Fatalf("expected stored data, got %s", content)
+	}
+}
+
+func TestUseRejectsInvalidName(t *testing.T) {
+	mgr := newTestManager(t)
+	if err := mgr.Use("../bad"); !errors.Is(err, errNameInvalidChars) {
+		t.Fatalf("expected invalid character error, got %v", err)
+	}
+}
+
+func TestSaveRejectsInvalidName(t *testing.T) {
+	mgr := newTestManager(t)
+	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("data"), 0o644); err != nil {
+		t.Fatalf("write active: %v", err)
+	}
+	if err := mgr.Save("../bad"); !errors.Is(err, errNameInvalidChars) {
+		t.Fatalf("expected invalid character error, got %v", err)
+	}
+	escapePath := filepath.Join(mgr.SettingsStoreDir(), "..", "bad.json")
+	exists, err := afero.Exists(mgr.fs, escapePath)
+	if err != nil {
+		t.Fatalf("exists escape path: %v", err)
+	}
+	if exists {
+		t.Fatalf("unexpected file created outside store")
+	}
+}
+
+func TestStoredSettingsPathInvalidName(t *testing.T) {
+	mgr := newTestManager(t)
+	if _, err := mgr.StoredSettingsPath("../bad"); !errors.Is(err, errNameInvalidChars) {
+		t.Fatalf("expected invalid character error, got %v", err)
+	}
+}
+
+func TestSaveTrimsSettingsName(t *testing.T) {
+	mgr := newTestManager(t)
+	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("data"), 0o644); err != nil {
+		t.Fatalf("write active: %v", err)
+	}
+	if err := mgr.Save(" dev "); err != nil {
+		t.Fatalf("save with spaces: %v", err)
+	}
+	if mgr.GetActiveSettingsName() != "dev" {
+		t.Fatalf("expected trimmed active name, got %q", mgr.GetActiveSettingsName())
+	}
+	path, err := mgr.StoredSettingsPath("dev")
+	if err != nil {
+		t.Fatalf("stored path: %v", err)
+	}
+	exists, err := afero.Exists(mgr.fs, path)
+	if err != nil {
+		t.Fatalf("exists dev: %v", err)
+	}
+	if !exists {
+		t.Fatalf("expected stored settings file for dev")
 	}
 }
 

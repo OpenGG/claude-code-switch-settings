@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,7 +20,11 @@ func main() {
 	}
 
 	if err := Run(afero.NewOsFs(), homeDir, cli.NewPromptUI(), os.Stdout, os.Stderr, os.Args[1:]); err != nil {
-		log.Printf("Error: %v", err)
+		if errors.Is(err, cli.ErrPromptCancelled) {
+			fmt.Fprintln(os.Stderr, "Cancelled by user.")
+		} else {
+			log.Printf("Error: %v", err)
+		}
 		os.Exit(1)
 	}
 }
