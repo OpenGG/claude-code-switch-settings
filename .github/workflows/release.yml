@@ -1,0 +1,44 @@
+name: Release macOS Binary
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21.x'
+
+      - name: Format and vet
+        run: |
+          gofmt -l .
+          go vet ./...
+
+      - name: Run tests with coverage
+        run: go test -coverprofile=coverage.out ./...
+
+      - name: Enforce coverage threshold
+        run: |
+          total=$(go tool cover -func=coverage.out | grep 'total:' | awk '{print $3}' | sed 's/%//')
+          awk "BEGIN { exit (!($total >= 80)) }"
+
+      - name: Build binary
+        run: go build -o ccs ./cmd/ccs
+
+      - name: Archive binary
+        run: tar -czf ccs-macos-amd64.tar.gz ccs
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ccs-macos-amd64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
