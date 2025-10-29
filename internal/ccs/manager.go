@@ -77,7 +77,7 @@ func (m *Manager) CalculateMD5(path string) (string, error) {
 }
 
 // backupFile copies the provided file into the backup directory.
-func (m *Manager) backupFile(path string) error {
+func (m *Manager) backupFile(path string) (err error) {
 	md5sum, err := m.CalculateMD5(path)
 	if err != nil {
 		return err
@@ -97,30 +97,42 @@ func (m *Manager) backupFile(path string) error {
 
 	backupPath := filepath.Join(m.backupDir(), md5sum+".json")
 	now := m.now()
-	if _, err := m.fs.Stat(backupPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			dst, err := m.fs.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-			if err != nil {
-				return fmt.Errorf("failed to create backup: %w", err)
-			}
-			if _, err := io.Copy(dst, source); err != nil {
-				dst.Close()
-				return fmt.Errorf("failed to copy backup: %w", err)
-			}
-			if err := dst.Close(); err != nil {
-				return fmt.Errorf("failed to close backup: %w", err)
-			}
-		} else {
-			return fmt.Errorf("failed to stat backup: %w", err)
-		}
-	} else {
+	if _, err := m.fs.Stat(backupPath); err == nil {
 		if err := m.fs.Chtimes(backupPath, now, now); err != nil {
 			return fmt.Errorf("failed to update backup timestamp: %w", err)
 		}
 		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to stat backup: %w", err)
 	}
 
-	return m.fs.Chtimes(backupPath, now, now)
+	dst, err := m.fs.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("failed to create backup: %w", err)
+	}
+	defer func() {
+		if dst == nil {
+			return
+		}
+		if cerr := dst.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("failed to close backup: %w", cerr)
+		}
+	}()
+
+	if _, err := io.Copy(dst, source); err != nil {
+		return fmt.Errorf("failed to copy backup: %w", err)
+	}
+
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("failed to close backup: %w", err)
+	}
+	dst = nil
+
+	if err := m.fs.Chtimes(backupPath, now, now); err != nil {
+		return fmt.Errorf("failed to update backup timestamp: %w", err)
+	}
+
+	return nil
 }
 
 // GetActiveSettingsName returns the currently active settings name.
