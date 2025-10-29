@@ -110,23 +110,18 @@ func (m *Manager) backupFile(path string) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to create backup: %w", err)
 	}
-	defer func() {
-		if dst == nil {
-			return
-		}
-		if cerr := dst.Close(); cerr != nil && err == nil {
-			err = fmt.Errorf("failed to close backup: %w", cerr)
-		}
-	}()
 
-	if _, err := io.Copy(dst, source); err != nil {
-		return fmt.Errorf("failed to copy backup: %w", err)
-	}
+	_, copyErr := io.Copy(dst, source)
+	closeErr := dst.Close()
 
-	if err := dst.Close(); err != nil {
-		return fmt.Errorf("failed to close backup: %w", err)
+	if copyErr != nil {
+		m.fs.Remove(backupPath)
+		return fmt.Errorf("failed to copy backup: %w", copyErr)
 	}
-	dst = nil
+	if closeErr != nil {
+		m.fs.Remove(backupPath)
+		return fmt.Errorf("failed to close backup: %w", closeErr)
+	}
 
 	if err := m.fs.Chtimes(backupPath, now, now); err != nil {
 		return fmt.Errorf("failed to update backup timestamp: %w", err)
@@ -192,20 +187,23 @@ func (m *Manager) copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(dest, source); err != nil {
-		dest.Close()
-		return err
+	_, copyErr := io.Copy(dest, source)
+	closeErr := dest.Close()
+
+	if copyErr != nil {
+		m.fs.Remove(tmp)
+		return copyErr
 	}
-	if err := dest.Close(); err != nil {
-		return err
+	if closeErr != nil {
+		m.fs.Remove(tmp)
+		return closeErr
 	}
+
 	if err := m.fs.Remove(dst); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := m.fs.Rename(tmp, dst); err != nil {
-		return err
-	}
-	return nil
+
+	return m.fs.Rename(tmp, dst)
 }
 
 // Use activates the target settings by copying them into the active location.

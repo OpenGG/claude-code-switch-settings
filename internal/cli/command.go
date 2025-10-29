@@ -27,7 +27,7 @@ func NewRootCommand(mgr *ccs.Manager, prompter Prompter, stdout, stderr io.Write
 
 	cmd.AddCommand(newListCommand(mgr, stdout))
 	cmd.AddCommand(newUseCommand(mgr, prompter, stdout))
-	cmd.AddCommand(newSaveCommand(mgr, prompter, stdout))
+	cmd.AddCommand(newSaveCommand(mgr, prompter))
 	cmd.AddCommand(newPruneCommand(mgr, prompter, stdout))
 
 	return cmd
@@ -97,7 +97,7 @@ func newUseCommand(mgr *ccs.Manager, prompter Prompter, stdout io.Writer) *cobra
 
 const newSettingsLabel = "[New Settings]"
 
-func newSaveCommand(mgr *ccs.Manager, prompter Prompter, stdout io.Writer) *cobra.Command {
+func newSaveCommand(mgr *ccs.Manager, prompter Prompter) *cobra.Command {
 	return &cobra.Command{
 		Use:   "save",
 		Short: "Save current settings and activate them",
@@ -132,13 +132,13 @@ func newSaveCommand(mgr *ccs.Manager, prompter Prompter, stdout io.Writer) *cobr
 					}
 					valid, vErr := mgr.ValidateSettingsName(name)
 					if !valid {
-						fmt.Fprintf(stdout, "Error: %s\n", vErr.Error())
+						fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", vErr.Error())
 						continue
 					}
 					if exists, err := afero.Exists(mgr.FileSystem(), mgr.StoredSettingsPath(name)); err != nil {
 						return err
 					} else if exists {
-						fmt.Fprintf(stdout, "Error: Settings '%s' already exists.\n", name)
+						fmt.Fprintf(cmd.ErrOrStderr(), "Error: Settings '%s' already exists.\n", name)
 						continue
 					}
 					target = name
@@ -150,7 +150,7 @@ func newSaveCommand(mgr *ccs.Manager, prompter Prompter, stdout io.Writer) *cobr
 					return err
 				}
 				if !confirm {
-					fmt.Fprintln(stdout, "Aborted saving settings.")
+					fmt.Fprintln(cmd.OutOrStdout(), "Aborted saving settings.")
 					return nil
 				}
 			}
@@ -158,7 +158,7 @@ func newSaveCommand(mgr *ccs.Manager, prompter Prompter, stdout io.Writer) *cobr
 			if err := mgr.Save(target); err != nil {
 				return err
 			}
-			fmt.Fprintf(stdout, "Successfully saved and activated settings: %s\n", target)
+			fmt.Fprintf(cmd.OutOrStdout(), "Successfully saved and activated settings: %s\n", target)
 			return nil
 		},
 	}
