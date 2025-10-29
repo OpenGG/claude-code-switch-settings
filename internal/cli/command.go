@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
-	"github.com/example/claude-code-switch-settings/internal/ccs"
+	"github.com/OpenGG/claude-code-switch-settings/internal/ccs"
 )
 
 // NewRootCommand constructs the root Cobra command for ccs.

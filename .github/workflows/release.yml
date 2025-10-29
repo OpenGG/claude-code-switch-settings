@@ -38,10 +38,10 @@ jobs:
           }'
 
       - name: Build binary
-        run: go build -o ccs .
+        run: go build -o ./bin/ccs ./cmd/ccs
 
       - name: Archive
-        run: tar -czf ccs-macos-amd64.tar.gz ccs
+        run: tar -czf ccs-macos-amd64.tar.gz ./bin
 
       - name: Publish release
         uses: softprops/action-gh-release@v1

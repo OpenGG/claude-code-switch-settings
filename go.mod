@@ -1,4 +1,4 @@
-module github.com/example/claude-code-switch-settings
+module github.com/OpenGG/claude-code-switch-settings
 
 go 1.21
 

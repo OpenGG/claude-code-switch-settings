@@ -6,7 +6,7 @@ Claude Code Switcher（`ccs`）是一款用于管理 Claude Code 多份 `setting
 
 ## 安装
 
-1. 从 [GitHub Releases](https://github.com/example/claude-code-switch-settings/releases) 下载最新的发布包。
+1. 从 [GitHub Releases](https://github.com/OpenGG/claude-code-switch-settings/releases) 下载最新的发布包。
 2. 解压后将 `ccs` 可执行文件放入 `PATH` 路径（例如 `~/bin`）。
 3. 运行 `ccs --help` 验证安装是否成功。
 
