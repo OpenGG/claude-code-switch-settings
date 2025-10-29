@@ -6,7 +6,7 @@ Claude Code Switcher (`ccs`) is a CLI utility that manages multiple `settings.js
 
 ## Installation
 
-1. Download the latest release archive from [GitHub Releases](https://github.com/example/claude-code-switch-settings/releases).
+1. Download the latest release archive from [GitHub Releases](https://github.com/OpenGG/claude-code-switch-settings/releases).
 2. Extract the archive and place the `ccs` binary somewhere on your `PATH` (for example `~/bin`).
 3. Run `ccs --help` to confirm the installation.
 

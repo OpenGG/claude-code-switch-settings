@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/afero"
 
-	"github.com/example/claude-code-switch-settings/internal/ccs"
-	"github.com/example/claude-code-switch-settings/internal/cli"
+	"github.com/OpenGG/claude-code-switch-settings/internal/ccs"
+	"github.com/OpenGG/claude-code-switch-settings/internal/cli"
 )
 
 func main() {
