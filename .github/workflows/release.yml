@@ -25,7 +25,17 @@ jobs:
 
       - name: Ensure coverage threshold
         run: |
-          go tool cover -func=coverage.out | grep "total:" | awk '{print $3}' | sed 's/%//' | xargs -I {} expr {} \>= 80
+          go tool cover -func=coverage.out | awk '/total:/ {gsub("%", "", $3); coverage=$3} END {\
+            if (coverage == "") {\
+              printf "Failed to parse total coverage.\n";\
+              exit 1;\
+            }\
+            printf "Total coverage: %s%%\n", coverage;\
+            if (coverage + 0 < 80) {\
+              printf "Coverage %.2f%% is below required 80%%.\n", coverage;\
+              exit 1;\
+            }\
+          }'
 
       - name: Build binary
         run: go build -o ccs .
