@@ -12,8 +12,10 @@ Claude Code Switcher (`ccs`) is a CLI utility that manages multiple `settings.js
 ```bash
 go build -o ./bin/ccs ./cmd/ccs    # Build binary
 go test ./...                       # Run all tests
-go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
-                                    # Check coverage (must be ≥80%)
+
+# Check coverage (internal/ccs must be ≥80%)
+go test -coverpkg=./internal/ccs/... -coverprofile=coverage.out ./internal/ccs/... && \
+  go tool cover -func=coverage.out | tail -1
 ```
 
 ### Code Quality (Required Before Commits)
@@ -44,7 +46,8 @@ internal/ccs/
 - Tests use `afero.NewMemMapFs()` for isolated in-memory filesystem
 - Table-driven tests for validation logic
 - Integration tests via Manager (tests all services together)
-- Target: ≥80% coverage for `internal/ccs`
+- Coverage target: ≥80% for `internal/ccs/...` (all subpackages included)
+- Use `-coverpkg=./internal/ccs/...` to measure true coverage including subpackages
 
 Example:
 ```go
