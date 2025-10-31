@@ -95,14 +95,56 @@ ccs prune-backups --older-than 30d [--force]
 
 ## 贡献指南
 
-1. 安装 Go 1.21 或更高版本。
-2. 在提交前对所有 Go 文件运行 `gofmt -s -w`。
-3. 执行质量和测试套件：
-   - `gofmt -l .`
-   - `go vet ./...`
-   - `go test -coverprofile=coverage.out ./...`
-   - `go tool cover -func=coverage.out`（总覆盖率必须 **>= 80%**）
-4. 提交 PR 时请提供清晰的变更说明。向 `main` 分支推送 SemVer 标签（如 `v1.0.0`）将触发自动发布。
+1. 安装 Go 1.21 或更高版本
+2. 克隆仓库并创建功能分支
+3. 按照以下指南进行更改
+4. 提交包含清晰描述的 Pull Request
+
+### 代码质量标准（必需）
+
+提交前请运行以下检查：
+
+```bash
+gofmt -s -w .      # 格式化所有 Go 文件
+go vet ./...       # 静态分析（将警告视为阻塞问题）
+go test ./...      # 运行所有测试
+```
+
+### 测试标准
+
+我们优先考虑**测试质量而非覆盖率数字**。详见 [TESTING.md](TESTING.md) 获取完整指南。
+
+**覆盖率检查：**
+```bash
+go test -coverpkg=./internal/ccs/... -coverprofile=coverage.out ./internal/ccs/...
+go tool cover -func=coverage.out | tail -1
+```
+
+**目标：约 80% 有意义的覆盖率**
+- 80% 阈值是指导原则，而非硬性要求
+- 安全关键代码（validator）需要 >90% 覆盖率
+- 不要为了提高数字而编写无意义的测试
+- 集成测试也计入覆盖率
+
+**应该测试的内容：**
+- ✅ 安全验证（攻击防护）
+- ✅ 复杂业务逻辑（算法、状态机）
+- ✅ 集成工作流（面向用户的操作）
+
+**不应该测试的内容：**
+- ❌ 简单包装器（已通过集成测试覆盖）
+- ❌ 简单的 getter/setter
+- ❌ 第三方库
+
+详细的架构信息请参阅 [CLAUDE.md](CLAUDE.md)，测试理念请参阅 [TESTING.md](TESTING.md)。
+
+### 发布流程
+
+向 `main` 分支推送 SemVer 标签（例如 `v1.0.0`）将触发发布。CI 工作流将：
+1. 运行代码质量检查（gofmt、go vet）
+2. 运行所有测试并验证覆盖率
+3. 构建 macOS 二进制文件
+4. 创建 GitHub 发布
 
 ## 许可协议
 

@@ -95,14 +95,58 @@ Backups use SHA-256 cryptographic hashing for content addressing, which:
 
 ## Contributing
 
-1. Install Go 1.21 or later.
-2. Run `gofmt -s -w` on all Go files before committing.
-3. Execute the quality and test suite:
-   - `gofmt -l .`
-   - `go vet ./...`
-   - `go test -coverprofile=coverage.out ./...`
-   - `go tool cover -func=coverage.out` (total coverage must be **>= 80%**)
-4. Submit pull requests with descriptive summaries. Releases are triggered by pushing a SemVer tag (e.g. `v1.0.0`) to the `main` branch.
+### Quick Start
+
+1. Install Go 1.21 or later
+2. Clone the repository and create a feature branch
+3. Make your changes following the guidelines below
+4. Submit a pull request with a clear description
+
+### Code Quality Standards (Required)
+
+Before committing, run these checks:
+
+```bash
+gofmt -s -w .      # Format all Go files
+go vet ./...       # Static analysis (treat warnings as blockers)
+go test ./...      # Run all tests
+```
+
+### Testing Standards
+
+We prioritize **test quality over coverage numbers**. See [TESTING.md](TESTING.md) for comprehensive guidelines.
+
+**Coverage check:**
+```bash
+go test -coverpkg=./internal/ccs/... -coverprofile=coverage.out ./internal/ccs/...
+go tool cover -func=coverage.out | tail -1
+```
+
+**Target: ~80% meaningful coverage**
+- The 80% threshold is a guideline, not a hard requirement
+- Security-critical code (validator) requires >90% coverage
+- Don't write trivial tests just to inflate numbers
+- Integration tests count toward coverage
+
+**What to test:**
+- ✅ Security validation (attack prevention)
+- ✅ Complex business logic (algorithms, state machines)
+- ✅ Integration workflows (user-facing operations)
+
+**What NOT to test:**
+- ❌ Simple wrappers (covered by integration tests)
+- ❌ Trivial getters/setters
+- ❌ Third-party libraries
+
+See [CLAUDE.md](CLAUDE.md) for architecture details and [TESTING.md](TESTING.md) for testing philosophy.
+
+### Release Process
+
+Releases are triggered by pushing a SemVer tag (e.g., `v1.0.0`) to the `main` branch. The CI workflow will:
+1. Run code quality checks (gofmt, go vet)
+2. Run all tests and verify coverage
+3. Build the macOS binary
+4. Create a GitHub release
 
 ## License
 

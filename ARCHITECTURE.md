@@ -277,35 +277,50 @@ type Manager struct {
 
 ## Testing Strategy
 
-### Unit Tests
+The codebase prioritizes **test quality over coverage numbers**. See [TESTING.md](TESTING.md) for comprehensive testing guidelines.
 
-Each layer can be tested in isolation:
+### Test Architecture
 
-- **Validator**: Test validation rules with edge cases
-- **Storage**: Test with in-memory filesystem (`afero.MemMapFs`)
-- **Backup**: Test hashing and deduplication logic
-- **Settings**: Test file listing and state management
-- **Manager**: Test orchestration (all services are real, filesystem is mocked)
+Each layer is tested according to its complexity and risk:
 
-### Integration Tests
+**Security-Critical (Comprehensive)**:
+- **Validator**: Path traversal, null bytes, control chars, reserved names, Unicode attacks
 
-Manager tests serve as integration tests, exercising all services together with a mocked filesystem.
+**Complex Business Logic (Thorough)**:
+- **Backup**: SHA-256 hashing, content-addressed deduplication, time-based pruning
+- **Settings**: State machine (5 states: active/modified/missing/unsaved/inactive)
 
-**Current Coverage**:
-- `internal/ccs`: 81.0% (Manager + integration)
-- `internal/cli`: 85.4% (CLI commands)
-- Overall: All critical paths tested
+**Infrastructure (Integration-Tested)**:
+- **Storage**: Atomic operations, symlink protection, secure permissions
+- **Manager**: End-to-end workflows (Use → Save → List cycles)
+
+**Not Tested**:
+- Simple wrappers (ReadFile, WriteFile, Exists) - covered by integration tests
+- Trivial getters/setters - no logic to verify
 
 ### Test Fixtures
 
+All tests use `afero.MemMapFs()` for fast, isolated, in-memory filesystem testing:
+
 ```go
 func newTestManager(t *testing.T) *Manager {
-    fs := afero.NewMemMapFs()          // In-memory filesystem
-    mgr := NewManager(fs, "/home/test", nil)  // nil logger = discard
-    mgr.InitInfra()                    // Create test directories
+    t.Helper()
+    fs := afero.NewMemMapFs()                     // In-memory filesystem
+    mgr := NewManager(fs, "/home/test", nil)      // nil logger = discard
+    mgr.InitInfra()                               // Create test directories
     return mgr
 }
 ```
+
+### Coverage Philosophy
+
+Target: **~80% meaningful coverage**
+- Security validation: >90% required
+- Complex logic: 80%+ expected
+- Simple wrappers: 0% acceptable (integration-tested)
+- Defensive error handling: 0% acceptable (untestable without mocking)
+
+Current coverage reflects meaningful tests, not inflated numbers. See [TESTING.md](TESTING.md) for detailed rationale.
 
 ## Security Architecture
 

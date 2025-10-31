@@ -27,8 +27,6 @@ The codebase has been refactored from a monolithic Manager (~400 lines) into a c
 - ✅ **Security**: Defense-in-depth with multiple validation layers
 - ✅ **Backward Compatible**: Public API unchanged
 
-**Test Coverage**: Improved to 81.0% for core logic (from 78.8%)
-
 See [ARCHITECTURE.md](ARCHITECTURE.md) for complete documentation.
 
 ### Added
@@ -78,11 +76,28 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for complete documentation.
   - File writes now properly check for buffer flush failures
 - **Error wrapping consistency** - All error returns now include proper context
 
+### Testing
+- **Testing philosophy established**: Test quality > coverage numbers
+- **New test files added** (45 meaningful tests covering security, complex logic, and integration):
+  - `internal/ccs/validator/validator_test.go` - Security attack surface (12 test suites, 80+ cases)
+  - `internal/ccs/storage/storage_test.go` - Atomic operations and symlink protection (9 tests)
+  - `internal/ccs/backup/service_test.go` - SHA-256 deduplication and pruning (15 tests)
+  - `internal/ccs/settings/service_test.go` - State machine logic (9 tests)
+- **TESTING.md added** - Comprehensive testing best practices guide (SSOT for testing philosophy)
+- **Documentation updated** with testing standards:
+  - CLAUDE.md: Quick reference (references TESTING.md)
+  - README.md: Contributing section updated with testing guidelines
+  - ARCHITECTURE.md: Testing strategy updated
+- **Coverage approach**: ~80% meaningful coverage (guideline, not hard requirement)
+  - Security-critical code (validator): >90% required
+  - Complex logic: 80%+ expected
+  - Simple wrappers: Tested via integration, not unit tests
+- **Test quality improvements**: Removed 15 trivial tests that inflated numbers without adding value
+
 ### Internal
 - **Manager** now accepts an optional `*slog.Logger` parameter
   - Defaults to discard logger if nil is passed
   - Tests pass nil for clean test output
-- **Test coverage maintained** at 80.7% (exceeds 80% threshold)
 - **All tests passing** across cmd/ccs, internal/ccs, and internal/cli packages
 
 ## [Previous Releases]

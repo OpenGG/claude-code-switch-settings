@@ -43,21 +43,46 @@ internal/ccs/
 
 ## Testing Conventions
 
-- Tests use `afero.NewMemMapFs()` for isolated in-memory filesystem
-- Table-driven tests for validation logic
-- Integration tests via Manager (tests all services together)
-- Coverage target: ≥80% for `internal/ccs/...` (all subpackages included)
-- Use `-coverpkg=./internal/ccs/...` to measure true coverage including subpackages
+**Philosophy:** Test quality > coverage numbers. See [TESTING.md](TESTING.md) for comprehensive guidelines.
 
-Example:
+### Quick Reference
+
+**What to test:**
+- ✅ Security (validator, symlink protection, permissions)
+- ✅ Complex logic (backup deduplication, state machine, pruning)
+- ✅ Integration (Use/Save/List workflows)
+
+**What NOT to test:**
+- ❌ Simple wrappers (ReadFile, WriteFile - tested via integration)
+- ❌ Trivial getters/setters
+- ❌ Third-party libraries
+
+**Test naming:** `TestFunctionName_Scenario`
+```go
+func TestValidateName_NullBytes(t *testing.T) { ... }  // Attack prevention
+func TestCopyFile_SecurePermissions(t *testing.T) { ... }  // Security requirement
+```
+
+**Helper pattern:**
 ```go
 func newTestManager(t *testing.T) *Manager {
+    t.Helper()
     fs := afero.NewMemMapFs()
     mgr := NewManager(fs, "/home/test", nil)  // nil logger = discard
     mgr.InitInfra()
     return mgr
 }
 ```
+
+**Coverage check:**
+```bash
+go test -coverpkg=./internal/ccs/... -coverprofile=coverage.out ./internal/ccs/...
+go tool cover -func=coverage.out | tail -1
+```
+
+**Target:** ~80% with meaningful tests (flexible guideline, not hard requirement)
+
+See [TESTING.md](TESTING.md) for detailed testing philosophy, examples, and best practices.
 
 ## Release Process
 

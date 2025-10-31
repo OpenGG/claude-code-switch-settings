@@ -34,9 +34,16 @@ This checklist ensures documentation stays accurate, complete, and free of dupli
 ### CLAUDE.md
 - [ ] Build commands work
 - [ ] Test commands work
-- [ ] Coverage threshold is current
+- [ ] Coverage threshold is current (~80% guideline)
 - [ ] Directory structure matches ARCHITECTURE.md
 - [ ] Release process steps are current
+- [ ] References TESTING.md (not duplicates it)
+
+### TESTING.md
+- [ ] Testing philosophy reflects current practices
+- [ ] Examples use current package structure
+- [ ] Coverage targets are current
+- [ ] Referenced from CLAUDE.md, README.md, and ARCHITECTURE.md
 
 ---
 
@@ -124,7 +131,7 @@ Each type of information has ONE authoritative location:
 | **How it works (architecture)** | ARCHITECTURE.md | CLAUDE.md (brief), README.md (very brief) |
 | **What changed** | CHANGELOG.md | - |
 | **Security model** | README.md (Security section) | ARCHITECTURE.md (implementation details) |
-| **Testing strategy** | ARCHITECTURE.md | CLAUDE.md (conventions only) |
+| **Testing philosophy** | TESTING.md | CLAUDE.md (quick ref), README.md (contributing), ARCHITECTURE.md (brief) |
 | **Build/test commands** | CLAUDE.md | README.md (Contributing section) |
 | **Release process** | CLAUDE.md | README.md (note only) |
 
@@ -202,8 +209,12 @@ grep -q "SHA-256" README.md
 # Ensure CHANGELOG is updated
 ! grep -q "## \[Unreleased\]" CHANGELOG.md || echo "WARNING: Update CHANGELOG before release"
 
-# Count markdown files (should be exactly 5)
-[ $(ls -1 *.md | wc -l) -eq 5 ] || echo "ERROR: Should have exactly 5 .md files"
+# Count markdown files (should be exactly 7: 6 docs + checklist)
+[ $(ls -1 *.md | wc -l) -eq 7 ] || echo "ERROR: Should have exactly 7 .md files"
+
+# Verify TESTING.md references exist
+grep -q "TESTING.md" CLAUDE.md || echo "ERROR: CLAUDE.md should reference TESTING.md"
+grep -q "TESTING.md" README.md || echo "ERROR: README.md should reference TESTING.md"
 
 # Verify Chinese translation is in sync (check key terms)
 grep -q "SHA-256" README.zh-cn.md || echo "WARNING: Chinese README may be outdated"
@@ -237,14 +248,16 @@ Score each document 0-5 on each metric:
 
 ```
 .
-├── README.md              # User documentation (install, use, security)
-├── README.zh-cn.md        # Chinese translation of README.md
-├── ARCHITECTURE.md        # Developer documentation (how it works)
-├── CHANGELOG.md          # Release history (what changed)
-└── CLAUDE.md             # AI assistant guidance (conventions, commands)
+├── README.md                      # User documentation (install, use, security)
+├── README.zh-cn.md                # Chinese translation of README.md
+├── ARCHITECTURE.md                # Developer documentation (how it works)
+├── CHANGELOG.md                   # Release history (what changed)
+├── CLAUDE.md                      # AI assistant guidance (conventions, commands)
+├── TESTING.md                     # Testing best practices (comprehensive guide)
+└── DOCUMENTATION_CHECKLIST.md     # Documentation standards (this file)
 ```
 
-**Total:** 5 files
+**Total:** 7 files (6 documentation files + this checklist)
 
 **Translations:** README.zh-cn.md must be kept in sync with README.md
 
@@ -256,3 +269,10 @@ Score each document 0-5 on each metric:
 5. Who will maintain it?
 
 If you can't answer all 5 questions clearly, don't create the file.
+
+**TESTING.md rationale:**
+1. Audience: Developers writing tests
+2. Purpose: Comprehensive testing philosophy and best practices (too detailed for ARCHITECTURE.md)
+3. Duplication: No - CLAUDE.md/README.md/ARCHITECTURE.md reference it, not duplicate it
+4. Permanent: Yes
+5. Maintainer: Contributors
