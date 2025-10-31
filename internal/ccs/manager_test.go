@@ -12,7 +12,7 @@ import (
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	fs := afero.NewMemMapFs()
-	mgr := NewManager(fs, "/home/test")
+	mgr := NewManager(fs, "/home/test", nil) // nil logger = discard logger for tests
 	if err := mgr.InitInfra(); err != nil {
 		t.Fatalf("InitInfra failed: %v", err)
 	}
@@ -41,8 +41,8 @@ func TestCalculateHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalculateHash empty error: %v", err)
 	}
-	if hash != "" {
-		t.Fatalf("expected empty hash for empty file, got %s", hash)
+	if hash != "empty" {
+		t.Fatalf("expected 'empty' hash for empty file, got %s", hash)
 	}
 }
 
@@ -289,7 +289,7 @@ func TestSaveCreatesNewSettings(t *testing.T) {
 
 func TestUseRejectsInvalidName(t *testing.T) {
 	mgr := newTestManager(t)
-	if err := mgr.Use("../bad"); !errors.Is(err, errNameInvalidChars) {
+	if err := mgr.Use("../bad"); !errors.Is(err, ErrSettingsNameInvalidChars) {
 		t.Fatalf("expected invalid character error, got %v", err)
 	}
 }
@@ -299,7 +299,7 @@ func TestSaveRejectsInvalidName(t *testing.T) {
 	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("data"), 0o644); err != nil {
 		t.Fatalf("write active: %v", err)
 	}
-	if err := mgr.Save("../bad"); !errors.Is(err, errNameInvalidChars) {
+	if err := mgr.Save("../bad"); !errors.Is(err, ErrSettingsNameInvalidChars) {
 		t.Fatalf("expected invalid character error, got %v", err)
 	}
 	escapePath := filepath.Join(mgr.SettingsStoreDir(), "..", "bad.json")
@@ -314,7 +314,7 @@ func TestSaveRejectsInvalidName(t *testing.T) {
 
 func TestStoredSettingsPathInvalidName(t *testing.T) {
 	mgr := newTestManager(t)
-	if _, err := mgr.StoredSettingsPath("../bad"); !errors.Is(err, errNameInvalidChars) {
+	if _, err := mgr.StoredSettingsPath("../bad"); !errors.Is(err, ErrSettingsNameInvalidChars) {
 		t.Fatalf("expected invalid character error, got %v", err)
 	}
 }
@@ -465,6 +465,132 @@ func TestAccessors(t *testing.T) {
 	}
 }
 
+func TestValidateSettingsNameBoundaries(t *testing.T) {
+	mgr := newTestManager(t)
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		// Valid cases
+		{"simple name", "work", false},
+		{"with hyphen", "my-settings", false},
+		{"with underscore", "my_settings", false},
+		{"with numbers", "settings123", false},
+		{"with dots", "v1.2.3", false},
+		{"max ASCII", "test-~", false},
+
+		// Invalid cases - empty and whitespace
+		{"empty string", "", true},
+		{"only spaces", "   ", true},
+		{"only tab", "\t", true},
+
+		// Invalid cases - dot navigation
+		{"single dot", ".", true},
+		{"double dot", "..", true},
+
+		// Invalid cases - null bytes
+		{"null byte at start", "\x00test", true},
+		{"null byte in middle", "test\x00file", true},
+		{"null byte at end", "test\x00", true},
+
+		// Invalid cases - control characters
+		{"control char NUL", "test\x00", true},
+		{"control char SOH", "test\x01", true},
+		{"control char STX", "test\x02", true},
+		{"control char DEL", "test\x7f", true},
+		{"newline", "test\nfile", true},
+		{"carriage return", "test\rfile", true},
+		{"tab character", "test\tfile", true},
+
+		// Invalid cases - non-printable ASCII
+		{"below space", "test\x1f", true},
+		{"above tilde", "test\x80", true},
+
+		// Invalid cases - invalid filesystem characters
+		{"forward slash", "my/settings", true},
+		{"backslash", "my\\settings", true},
+		{"colon", "my:settings", true},
+		{"asterisk", "my*settings", true},
+		{"question mark", "my?settings", true},
+		{"double quote", "my\"settings", true},
+		{"less than", "my<settings", true},
+		{"greater than", "my>settings", true},
+		{"pipe", "my|settings", true},
+
+		// Invalid cases - reserved Windows names
+		{"CON uppercase", "CON", true},
+		{"CON lowercase", "con", true},
+		{"CON mixed case", "Con", true},
+		{"PRN", "PRN", true},
+		{"AUX", "AUX", true},
+		{"NUL", "NUL", true},
+		{"COM1", "COM1", true},
+		{"COM9", "COM9", true},
+		{"LPT1", "LPT1", true},
+		{"LPT9", "LPT9", true},
+
+		// Invalid cases - Unicode (non-ASCII)
+		{"unicode emoji", "settings😀", true},
+		{"unicode Chinese", "设置", true},
+		{"unicode accented", "café", true},
+		{"unicode Cyrillic", "настройки", true},
+
+		// Edge cases - length (filesystem limits vary, but these should work)
+		{"very long name", string(make([]byte, 255)), false}, // All spaces become single space when trimmed
+		{"255 a's", string(make([]rune, 255)), false},
+
+		// Whitespace handling
+		{"leading spaces", "  work", false},  // Trimmed to "work"
+		{"trailing spaces", "work  ", false}, // Trimmed to "work"
+		{"both spaces", "  work  ", false},   // Trimmed to "work"
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Special handling for the very long name test
+			input := tt.input
+			if tt.name == "very long name" {
+				// Create a valid 255-character name
+				for i := range input {
+					input = input[:i] + "a"
+				}
+			}
+			if tt.name == "255 a's" {
+				input = ""
+				for i := 0; i < 255; i++ {
+					input += "a"
+				}
+			}
+
+			valid, err := mgr.ValidateSettingsName(input)
+			if tt.wantErr {
+				if valid || err == nil {
+					t.Errorf("expected error for %q, got valid=%v err=%v", input, valid, err)
+				}
+			} else {
+				if !valid || err != nil {
+					t.Errorf("unexpected error for %q: valid=%v err=%v", input, valid, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateSettingsNameNullByte(t *testing.T) {
+	mgr := newTestManager(t)
+
+	// Explicit null byte test
+	valid, err := mgr.ValidateSettingsName("test\x00file")
+	if valid {
+		t.Error("expected invalid for null byte")
+	}
+	if !errors.Is(err, ErrSettingsNameNullByte) {
+		t.Errorf("expected ErrSettingsNameNullByte, got %v", err)
+	}
+}
+
 func TestPruneBackupsNoDeletion(t *testing.T) {
 	mgr := newTestManager(t)
 	backup := mgr.BackupDir()
@@ -482,7 +608,7 @@ func TestPruneBackupsNoDeletion(t *testing.T) {
 	}
 }
 
-func TestBackupFileSkipsEmptyFile(t *testing.T) {
+func TestBackupFileCreatesBackupForEmptyFile(t *testing.T) {
 	mgr := newTestManager(t)
 	path := mgr.ActiveSettingsPath()
 	if err := afero.WriteFile(mgr.fs, path, []byte{}, 0o644); err != nil {
@@ -495,8 +621,12 @@ func TestBackupFileSkipsEmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read backup dir: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("expected no backups, got %d", len(entries))
+	// Empty files now create a backup with hash "empty"
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 backup for empty file, got %d", len(entries))
+	}
+	if entries[0].Name() != "empty.json" {
+		t.Fatalf("expected backup named 'empty.json', got %s", entries[0].Name())
 	}
 }
 
@@ -567,7 +697,7 @@ func TestPruneBackupsIgnoresDirectories(t *testing.T) {
 
 func TestInitInfraError(t *testing.T) {
 	roFs := afero.NewReadOnlyFs(afero.NewMemMapFs())
-	mgr := NewManager(roFs, "/home/ro")
+	mgr := NewManager(roFs, "/home/ro", nil)
 	if err := mgr.InitInfra(); err == nil {
 		t.Fatalf("expected error initializing read-only fs")
 	}

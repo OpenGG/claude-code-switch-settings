@@ -70,13 +70,17 @@ func newUseCommand(mgr *ccs.Manager, prompter Prompter, stdout io.Writer) *cobra
 			name := ""
 			if len(args) > 0 {
 				name = args[0]
+				// Early validation of command-line argument
+				if valid, err := mgr.ValidateSettingsName(name); !valid {
+					return fmt.Errorf("invalid settings name: %w", err)
+				}
 			} else {
 				names, err := mgr.StoredSettings()
 				if err != nil {
 					return err
 				}
 				if len(names) == 0 {
-					return errors.New("no stored settings available")
+					return fmt.Errorf("use command: no stored settings available in %s", mgr.SettingsStoreDir())
 				}
 				names = reorderWithDefault(names, mgr.GetActiveSettingsName())
 				_, selected, err := prompter.Select("Select settings to activate", names, mgr.GetActiveSettingsName())
@@ -264,10 +268,14 @@ func parseDays(value string) (time.Duration, error) {
 	return time.Duration(d) * 24 * time.Hour, nil
 }
 
+// reorderWithDefault moves the default value to the front of the list.
+// If defaultValue is empty or not found, or already first, returns items unchanged.
 func reorderWithDefault(items []string, defaultValue string) []string {
 	if defaultValue == "" {
 		return items
 	}
+
+	// Find the index of the default value
 	idx := -1
 	for i, item := range items {
 		if item == defaultValue {
@@ -275,9 +283,17 @@ func reorderWithDefault(items []string, defaultValue string) []string {
 			break
 		}
 	}
+
+	// If not found or already at position 0, return unchanged
 	if idx <= 0 {
 		return items
 	}
-	reordered := append([]string{defaultValue}, append(append([]string{}, items[:idx]...), items[idx+1:]...)...)
+
+	// Build reordered list: [defaultValue, items before idx, items after idx]
+	reordered := make([]string, 0, len(items))
+	reordered = append(reordered, defaultValue)
+	reordered = append(reordered, items[:idx]...)
+	reordered = append(reordered, items[idx+1:]...)
+
 	return reordered
 }

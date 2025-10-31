@@ -50,7 +50,48 @@ Deletes backups in `~/.claude/switch-settings-backup/` that have not been refres
 
 ## How Backups Work
 
-Before `ccs use` or `ccs save` overwrites any file, the previous contents are copied into `~/.claude/switch-settings-backup/` using an MD5 hash as the filename. If a backup with the same checksum already exists, its modification time is refreshed to capture the most recent backup event.
+Before `ccs use` or `ccs save` overwrites any file, the previous contents are copied into `~/.claude/switch-settings-backup/` using a SHA-256 hash as the filename. If a backup with the same checksum already exists, its modification time is refreshed to capture the most recent backup event. Empty files are backed up with a warning logged.
+
+## Security
+
+### File Permissions
+
+All settings files and directories are created with restrictive permissions to protect sensitive data:
+- **Directories**: `0700` (owner read/write/execute only - `drwx------`)
+- **Files**: `0600` (owner read/write only - `-rw-------`)
+
+This prevents other users on multi-user systems from reading your settings, which may contain API keys, authentication tokens, workspace configurations, or other sensitive data.
+
+### Symlink Protection
+
+`ccs` validates that target paths are not symbolic links before performing file operations. This prevents symlink attacks where a malicious actor could create a symlink to a system file (e.g., `/etc/passwd`) and trick `ccs` into overwriting it.
+
+### Atomic File Operations
+
+All file replacements use atomic rename operations. If a `ccs use` or `ccs save` operation fails partway through, your existing settings remain intact. There is no window where settings files are partially written or missing.
+
+### Input Validation
+
+Settings profile names undergo comprehensive validation to prevent:
+- **Path traversal attacks**: Names like `../../../etc/passwd` are rejected
+- **Null byte injection**: Names containing null bytes (`\x00`) are rejected
+- **Reserved filenames**: Windows reserved names (CON, PRN, AUX, etc.) are rejected
+- **Invalid characters**: Filesystem-unsafe characters (`<>:"/\|?*`) are blocked
+- **Non-ASCII characters**: Only printable ASCII (0x20-0x7E) is allowed
+
+### Content Addressing
+
+Backups use SHA-256 cryptographic hashing for content addressing, which:
+- Eliminates collision risks present in MD5
+- Ensures identical settings files share a single backup
+- Prevents accidental data loss from hash collisions
+
+### Best Practices
+
+1. **Regular backups**: Use `ccs prune-backups` judiciously - keep at least 30 days of backups
+2. **Permissions audit**: Verify `~/.claude/` permissions with `ls -la ~/.claude/`
+3. **Multi-user systems**: On shared systems, ensure your home directory is not world-readable
+4. **Sensitive data**: Consider encrypting `~/.claude/` if your settings contain highly sensitive data
 
 ## Contributing
 

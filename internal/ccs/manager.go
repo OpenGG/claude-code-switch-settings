@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,27 +17,42 @@ import (
 	"github.com/spf13/afero"
 )
 
+// Exported error variables allow callers to use errors.Is() for error checking.
 var (
-	errNameEmpty        = errors.New("Name cannot be empty.")
-	errNameDot          = errors.New("Name cannot be '.' or '..'.")
-	errNameNonPrintable = errors.New("Name contains non-printable ASCII characters.")
-	errNameInvalidChars = errors.New("Name contains invalid characters (<>:\"/|?*).")
-	errNameReserved     = errors.New("Name is a reserved system filename.")
+	ErrSettingsNameEmpty        = errors.New("settings name cannot be empty")
+	ErrSettingsNameDot          = errors.New("settings name cannot be '.' or '..'")
+	ErrSettingsNameNonPrintable = errors.New("settings name contains non-printable characters")
+	ErrSettingsNameInvalidChars = errors.New("settings name contains invalid characters (<>:\"/|?*)")
+	ErrSettingsNameReserved     = errors.New("settings name is a reserved system filename")
+	ErrSettingsNameNullByte     = errors.New("settings name contains null byte")
 )
 
 var reservedNamePattern = regexp.MustCompile(`^(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])$`)
 var invalidCharsPattern = regexp.MustCompile(`[<>:"/\\|?*]`)
 
 // Manager coordinates settings operations using an injected filesystem and clock.
+// It provides atomic file operations, content-addressed backups, and comprehensive
+// validation of settings names to prevent security issues like path traversal and
+// symlink attacks.
 type Manager struct {
 	fs      afero.Fs
 	homeDir string
 	now     func() time.Time
+	logger  *slog.Logger
 }
 
 // NewManager constructs a Manager using the provided filesystem and home directory.
-func NewManager(fs afero.Fs, homeDir string) *Manager {
-	return &Manager{fs: fs, homeDir: homeDir, now: time.Now}
+// If logger is nil, a default logger will be created that discards all output.
+func NewManager(fs afero.Fs, homeDir string, logger *slog.Logger) *Manager {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return &Manager{
+		fs:      fs,
+		homeDir: homeDir,
+		now:     time.Now,
+		logger:  logger,
+	}
 }
 
 // InitInfra ensures that required directories exist.
@@ -51,7 +67,8 @@ func (m *Manager) InitInfra() error {
 }
 
 // CalculateHash returns the SHA-256 hash of the given file.
-// Empty files return an empty string. Missing files also return an empty string without error.
+// Empty files return a special "empty" marker and log a warning.
+// Missing files return an empty string without error.
 func (m *Manager) CalculateHash(path string) (string, error) {
 	info, err := m.fs.Stat(path)
 	if err != nil {
@@ -61,7 +78,10 @@ func (m *Manager) CalculateHash(path string) (string, error) {
 		return "", fmt.Errorf("failed to stat file for hashing: %w", err)
 	}
 	if info.Size() == 0 {
-		return "", nil
+		m.logger.Warn("empty file detected during hash calculation",
+			"path", path,
+			"operation", "hash")
+		return "empty", nil
 	}
 
 	f, err := m.fs.Open(path)
@@ -77,13 +97,29 @@ func (m *Manager) CalculateHash(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// backupFile copies the provided file into the backup directory.
+// backupFile creates a content-addressed backup of the file at path.
+//
+// The backup uses SHA-256 hash as filename, enabling deduplication:
+//   - Identical content reuses the same backup file
+//   - Modified time (mtime) is updated on each backup event
+//   - Empty files are backed up with hash "empty" (with warning logged)
+//   - Missing files are silently skipped
+//
+// Backup files are stored in ~/.claude/switch-settings-backup/ as:
+//
+//	<sha256-hash>.json or empty.json
+//
+// This approach ensures:
+//   - Multiple backups of identical content don't waste space
+//   - The prune command can use mtime to determine backup age
+//   - Each unique settings version is preserved exactly once
 func (m *Manager) backupFile(path string) (err error) {
 	hash, err := m.CalculateHash(path)
 	if err != nil {
 		return err
 	}
 	if hash == "" {
+		// File doesn't exist - nothing to backup
 		return nil
 	}
 
@@ -103,9 +139,14 @@ func (m *Manager) backupFile(path string) (err error) {
 	backupPath := filepath.Join(m.backupDir(), hash+".json")
 	now := m.now()
 	if _, err := m.fs.Stat(backupPath); err == nil {
+		// Backup already exists - just update timestamp for deduplication
 		if err := m.fs.Chtimes(backupPath, now, now); err != nil {
 			return fmt.Errorf("failed to update backup timestamp: %w", err)
 		}
+		m.logger.Debug("backup already exists, updated timestamp",
+			"path", path,
+			"hash", hash,
+			"backup_path", backupPath)
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to stat backup: %w", err)
@@ -132,6 +173,11 @@ func (m *Manager) backupFile(path string) (err error) {
 		return fmt.Errorf("failed to update backup timestamp: %w", err)
 	}
 
+	m.logger.Info("backup created",
+		"path", path,
+		"hash", hash,
+		"backup_path", backupPath)
+
 	return nil
 }
 
@@ -149,28 +195,44 @@ func (m *Manager) SetActiveSettings(name string) error {
 	return afero.WriteFile(m.fs, m.activeStatePath(), []byte(name), 0o600)
 }
 
-// ValidateSettingsName validates the provided settings name.
+// ValidateSettingsName validates the provided settings name for security and compatibility.
+//
+// The function checks for:
+//   - Empty names or whitespace-only names
+//   - Dot navigation (. or ..)
+//   - Null bytes (path traversal attack vector)
+//   - Non-printable ASCII characters
+//   - Invalid filesystem characters (<>:"/\|?*)
+//   - Reserved Windows filenames (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+//
+// Returns (true, nil) if valid, or (false, error) with a descriptive error.
 func (m *Manager) ValidateSettingsName(name string) (bool, error) {
 	trimmed := strings.TrimSpace(name)
 	if len(trimmed) == 0 {
-		return false, errNameEmpty
+		return false, ErrSettingsNameEmpty
 	}
 	if trimmed == "." || trimmed == ".." {
-		return false, errNameDot
+		return false, ErrSettingsNameDot
 	}
+
+	// Explicit null byte check for defense-in-depth
+	if strings.ContainsRune(trimmed, 0) {
+		return false, ErrSettingsNameNullByte
+	}
+
 	for _, r := range trimmed {
 		if r < 0x20 || r > 0x7e {
-			return false, errNameNonPrintable
+			return false, ErrSettingsNameNonPrintable
 		}
 		if r == 0x7f {
-			return false, errNameNonPrintable
+			return false, ErrSettingsNameNonPrintable
 		}
 	}
 	if invalidCharsPattern.MatchString(trimmed) {
-		return false, errNameInvalidChars
+		return false, ErrSettingsNameInvalidChars
 	}
 	if reservedNamePattern.MatchString(trimmed) {
-		return false, errNameReserved
+		return false, ErrSettingsNameReserved
 	}
 	return true, nil
 }
@@ -179,7 +241,7 @@ func (m *Manager) normalizeSettingsName(name string) (string, error) {
 	trimmed := strings.TrimSpace(name)
 	if ok, err := m.ValidateSettingsName(trimmed); !ok {
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("invalid settings name: %w", err)
 		}
 		return "", errors.New("invalid settings name")
 	}
@@ -257,7 +319,28 @@ func (m *Manager) copyFile(src, dst string) (err error) {
 	return nil
 }
 
-// Use activates the target settings by copying them into the active location.
+// Use activates the specified settings profile by copying it to the active settings location.
+//
+// The operation performs the following steps atomically:
+//  1. Validates the profile name (see ValidateSettingsName)
+//  2. Verifies the profile exists in the settings store
+//  3. Backs up the current active settings (if any)
+//  4. Atomically copies the profile to ~/.claude/settings.json
+//  5. Updates the active state file to track the current profile
+//
+// The operation is atomic - if it fails at any step, the current settings remain unchanged.
+//
+// Returns an error if:
+//   - The profile name is invalid (see ValidateSettingsName)
+//   - The profile doesn't exist in the settings store
+//   - File operations fail (permissions, disk space, etc.)
+//
+// Example:
+//
+//	err := mgr.Use("work")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 func (m *Manager) Use(name string) error {
 	if err := m.InitInfra(); err != nil {
 		return err
@@ -284,7 +367,28 @@ func (m *Manager) Use(name string) error {
 	return nil
 }
 
-// Save writes the current active settings to the specified target and activates it.
+// Save persists the current active settings to a named profile in the settings store.
+//
+// The operation performs the following steps atomically:
+//  1. Validates the target profile name (see ValidateSettingsName)
+//  2. Verifies that ~/.claude/settings.json exists
+//  3. Backs up the existing profile (if overwriting)
+//  4. Atomically copies current settings to the profile location
+//  5. Updates the active state to track this profile
+//
+// The operation is atomic - if it fails at any step, existing profiles remain unchanged.
+//
+// Returns an error if:
+//   - The active settings.json doesn't exist
+//   - The target profile name is invalid
+//   - File operations fail (permissions, disk space, etc.)
+//
+// Example:
+//
+//	err := mgr.Save("work-settings")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 func (m *Manager) Save(targetName string) error {
 	if err := m.InitInfra(); err != nil {
 		return err
@@ -312,7 +416,12 @@ func (m *Manager) Save(targetName string) error {
 	return nil
 }
 
-// StoredSettings returns the names of all stored settings sorted lexicographically.
+// StoredSettings returns the names of all stored settings profiles, sorted lexicographically.
+//
+// The function scans the settings store directory (~/.claude/switch-settings/) and returns
+// only the base names (without .json extension) of regular files.
+//
+// Returns an error if the settings store directory cannot be read.
 func (m *Manager) StoredSettings() ([]string, error) {
 	if err := m.InitInfra(); err != nil {
 		return nil, err
@@ -344,7 +453,19 @@ type ListEntry struct {
 	Plain      bool
 }
 
-// ListSettings computes the list entries for presentation.
+// ListSettings computes formatted entries for display in the list command.
+//
+// Each entry includes:
+//   - Name: The profile name
+//   - Prefix: Visual indicator (* = active, ! = missing, space = inactive)
+//   - Qualifiers: Tags like "active", "modified", "missing!"
+//   - Plain: Whether to skip bracket formatting
+//
+// The function compares stored profiles with the active settings and annotates
+// entries with their status. If the active profile has been modified locally,
+// it will be marked with "modified".
+//
+// Returns an error if the settings store or active settings cannot be accessed.
 func (m *Manager) ListSettings() ([]ListEntry, error) {
 	if err := m.InitInfra(); err != nil {
 		return nil, err
@@ -397,7 +518,22 @@ func (m *Manager) ListSettings() ([]ListEntry, error) {
 	return entries, nil
 }
 
-// PruneBackups removes backup files older than the specified cutoff.
+// PruneBackups removes backup files older than the specified duration.
+//
+// The function uses modification time (mtime) to determine backup age. Since
+// content-addressed backups update mtime on each backup event, this effectively
+// prunes backups that haven't been referenced recently.
+//
+// Returns the number of backups deleted and any error encountered.
+//
+// Example:
+//
+//	// Delete backups older than 30 days
+//	count, err := mgr.PruneBackups(30 * 24 * time.Hour)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	fmt.Printf("Deleted %d backups\n", count)
 func (m *Manager) PruneBackups(olderThan time.Duration) (int, error) {
 	if err := m.InitInfra(); err != nil {
 		return 0, err

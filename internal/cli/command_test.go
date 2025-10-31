@@ -72,7 +72,7 @@ func (s *stubPrompter) Confirm(label string, defaultYes bool) (bool, error) {
 func newTestCommandManager(t *testing.T) *ccs.Manager {
 	t.Helper()
 	fs := afero.NewMemMapFs()
-	mgr := ccs.NewManager(fs, "/home/test")
+	mgr := ccs.NewManager(fs, "/home/test", nil) // nil logger = discard logger for tests
 	if err := mgr.InitInfra(); err != nil {
 		t.Fatalf("InitInfra: %v", err)
 	}

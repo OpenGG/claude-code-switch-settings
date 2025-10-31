@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 
 	"github.com/spf13/afero"
@@ -30,7 +31,12 @@ func main() {
 }
 
 func Run(fs afero.Fs, homeDir string, prompter cli.Prompter, stdout, stderr io.Writer, args []string) error {
-	manager := ccs.NewManager(fs, homeDir)
+	// Create a logger that writes to stderr (warnings and above)
+	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{
+		Level: slog.LevelWarn, // Only show warnings and errors by default
+	}))
+
+	manager := ccs.NewManager(fs, homeDir, logger)
 	if err := manager.InitInfra(); err != nil {
 		return fmt.Errorf("failed to initialize directories: %w", err)
 	}
