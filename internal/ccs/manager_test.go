@@ -19,15 +19,15 @@ func newTestManager(t *testing.T) *Manager {
 	return mgr
 }
 
-func TestCalculateMD5(t *testing.T) {
+func TestCalculateHash(t *testing.T) {
 	mgr := newTestManager(t)
 	path := filepath.Join(mgr.claudeDir(), "file.json")
 	if err := afero.WriteFile(mgr.fs, path, []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	hash, err := mgr.CalculateMD5(path)
+	hash, err := mgr.CalculateHash(path)
 	if err != nil {
-		t.Fatalf("CalculateMD5 error: %v", err)
+		t.Fatalf("CalculateHash error: %v", err)
 	}
 	if hash == "" {
 		t.Fatalf("expected non-empty hash")
@@ -37,9 +37,9 @@ func TestCalculateMD5(t *testing.T) {
 	if err := afero.WriteFile(mgr.fs, emptyPath, []byte{}, 0o644); err != nil {
 		t.Fatalf("write empty: %v", err)
 	}
-	hash, err = mgr.CalculateMD5(emptyPath)
+	hash, err = mgr.CalculateHash(emptyPath)
 	if err != nil {
-		t.Fatalf("CalculateMD5 empty error: %v", err)
+		t.Fatalf("CalculateHash empty error: %v", err)
 	}
 	if hash != "" {
 		t.Fatalf("expected empty hash for empty file, got %s", hash)
@@ -76,7 +76,7 @@ func TestBackupFileCreatesAndUpdates(t *testing.T) {
 		t.Fatalf("backup: %v", err)
 	}
 
-	hash, err := mgr.CalculateMD5(path)
+	hash, err := mgr.CalculateHash(path)
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
@@ -393,9 +393,9 @@ func TestPruneBackups(t *testing.T) {
 	}
 }
 
-func TestCalculateMD5MissingFile(t *testing.T) {
+func TestCalculateHashMissingFile(t *testing.T) {
 	mgr := newTestManager(t)
-	hash, err := mgr.CalculateMD5(filepath.Join(mgr.claudeDir(), "missing.json"))
+	hash, err := mgr.CalculateHash(filepath.Join(mgr.claudeDir(), "missing.json"))
 	if err != nil {
 		t.Fatalf("expected no error for missing file: %v", err)
 	}

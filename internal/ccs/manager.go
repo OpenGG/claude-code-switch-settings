@@ -1,7 +1,7 @@
 package ccs
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -43,15 +43,16 @@ func NewManager(fs afero.Fs, homeDir string) *Manager {
 func (m *Manager) InitInfra() error {
 	paths := []string{m.claudeDir(), m.settingsStoreDir(), m.backupDir()}
 	for _, p := range paths {
-		if err := m.fs.MkdirAll(p, 0o755); err != nil {
+		if err := m.fs.MkdirAll(p, 0o700); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", p, err)
 		}
 	}
 	return nil
 }
 
-// CalculateMD5 returns the MD5 hash of the given file.
-func (m *Manager) CalculateMD5(path string) (string, error) {
+// CalculateHash returns the SHA-256 hash of the given file.
+// Empty files return an empty string. Missing files also return an empty string without error.
+func (m *Manager) CalculateHash(path string) (string, error) {
 	info, err := m.fs.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -69,7 +70,7 @@ func (m *Manager) CalculateMD5(path string) (string, error) {
 	}
 	defer f.Close()
 
-	h := md5.New()
+	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", fmt.Errorf("failed to hash file: %w", err)
 	}
@@ -78,11 +79,11 @@ func (m *Manager) CalculateMD5(path string) (string, error) {
 
 // backupFile copies the provided file into the backup directory.
 func (m *Manager) backupFile(path string) (err error) {
-	md5sum, err := m.CalculateMD5(path)
+	hash, err := m.CalculateHash(path)
 	if err != nil {
 		return err
 	}
-	if md5sum == "" {
+	if hash == "" {
 		return nil
 	}
 
@@ -93,9 +94,13 @@ func (m *Manager) backupFile(path string) (err error) {
 		}
 		return fmt.Errorf("failed to open file for backup: %w", err)
 	}
-	defer source.Close()
+	defer func() {
+		if cerr := source.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("failed to close source: %w", cerr)
+		}
+	}()
 
-	backupPath := filepath.Join(m.backupDir(), md5sum+".json")
+	backupPath := filepath.Join(m.backupDir(), hash+".json")
 	now := m.now()
 	if _, err := m.fs.Stat(backupPath); err == nil {
 		if err := m.fs.Chtimes(backupPath, now, now); err != nil {
@@ -106,7 +111,7 @@ func (m *Manager) backupFile(path string) (err error) {
 		return fmt.Errorf("failed to stat backup: %w", err)
 	}
 
-	dst, err := m.fs.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	dst, err := m.fs.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to create backup: %w", err)
 	}
@@ -141,7 +146,7 @@ func (m *Manager) GetActiveSettingsName() string {
 
 // SetActiveSettings sets the active settings name.
 func (m *Manager) SetActiveSettings(name string) error {
-	return afero.WriteFile(m.fs, m.activeStatePath(), []byte(name), 0o644)
+	return afero.WriteFile(m.fs, m.activeStatePath(), []byte(name), 0o600)
 }
 
 // ValidateSettingsName validates the provided settings name.
@@ -181,40 +186,75 @@ func (m *Manager) normalizeSettingsName(name string) (string, error) {
 	return trimmed, nil
 }
 
-// copyFile copies a file from src to dst, overwriting the destination.
-func (m *Manager) copyFile(src, dst string) error {
+// validatePathSafety checks that the path is not a symlink, preventing symlink attacks.
+// It returns nil if the path doesn't exist or is a regular file/directory.
+func (m *Manager) validatePathSafety(path string) error {
+	// Try to use Lstat if the filesystem supports it
+	if lstater, ok := m.fs.(afero.Lstater); ok {
+		info, _, err := lstater.LstatIfPossible(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil // Non-existent paths are safe to write to
+			}
+			return fmt.Errorf("failed to check path: %w", err)
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to operate on symlink: %s", path)
+		}
+	}
+	// If Lstat not available, fall through (in-memory filesystems don't support symlinks anyway)
+	return nil
+}
+
+// copyFile copies a file from src to dst, atomically replacing the destination.
+func (m *Manager) copyFile(src, dst string) (err error) {
+	// Validate that paths are not symlinks
+	if err := m.validatePathSafety(src); err != nil {
+		return fmt.Errorf("validate source: %w", err)
+	}
+	if err := m.validatePathSafety(dst); err != nil {
+		return fmt.Errorf("validate destination: %w", err)
+	}
+
 	source, err := m.fs.Open(src)
 	if err != nil {
-		return err
+		return fmt.Errorf("open source: %w", err)
 	}
-	defer source.Close()
+	defer func() {
+		if cerr := source.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close source: %w", cerr)
+		}
+	}()
 
 	dir := filepath.Dir(dst)
-	if err := m.fs.MkdirAll(dir, 0o755); err != nil {
-		return err
+	if err := m.fs.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create directory: %w", err)
 	}
 	tmp := dst + ".tmp"
-	dest, err := m.fs.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	dest, err := m.fs.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return err
+		return fmt.Errorf("create temp file: %w", err)
 	}
 	_, copyErr := io.Copy(dest, source)
 	closeErr := dest.Close()
 
 	if copyErr != nil {
 		m.fs.Remove(tmp)
-		return copyErr
+		return fmt.Errorf("copy data: %w", copyErr)
 	}
 	if closeErr != nil {
 		m.fs.Remove(tmp)
-		return closeErr
+		return fmt.Errorf("close temp file: %w", closeErr)
 	}
 
-	if err := m.fs.Remove(dst); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	// Atomic rename: Unix rename() atomically replaces the destination
+	if err := m.fs.Rename(tmp, dst); err != nil {
+		m.fs.Remove(tmp)
+		return fmt.Errorf("atomic rename: %w", err)
 	}
 
-	return m.fs.Rename(tmp, dst)
+	return nil
 }
 
 // Use activates the target settings by copying them into the active location.
@@ -310,7 +350,7 @@ func (m *Manager) ListSettings() ([]ListEntry, error) {
 		return nil, err
 	}
 	activeName := m.GetActiveSettingsName()
-	currentMD5, err := m.CalculateMD5(m.activeSettingsPath())
+	currentHash, err := m.CalculateHash(m.activeSettingsPath())
 	if err != nil {
 		return nil, err
 	}
@@ -326,12 +366,12 @@ func (m *Manager) ListSettings() ([]ListEntry, error) {
 		if name == activeName {
 			entry.Prefix = "*"
 			activeHandled = true
-			storedMD5, err := m.CalculateMD5(m.storedSettingsPath(name))
+			storedHash, err := m.CalculateHash(m.storedSettingsPath(name))
 			if err != nil {
 				return nil, err
 			}
 			entry.Qualifiers = append(entry.Qualifiers, "active")
-			if currentMD5 != "" && storedMD5 != "" && currentMD5 != storedMD5 {
+			if currentHash != "" && storedHash != "" && currentHash != storedHash {
 				entry.Qualifiers = append(entry.Qualifiers, "modified")
 			}
 		} else {
@@ -346,7 +386,7 @@ func (m *Manager) ListSettings() ([]ListEntry, error) {
 			Prefix:     "!",
 			Qualifiers: []string{"active", "missing!"},
 		})
-	} else if activeName == "" && currentMD5 != "" {
+	} else if activeName == "" && currentHash != "" {
 		entries = append(entries, ListEntry{
 			Name:   "(Current settings.json is unsaved)",
 			Prefix: "*",
