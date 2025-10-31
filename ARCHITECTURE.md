@@ -154,22 +154,41 @@ var (
 ```go
 func (m *Manager) Use(name string) error {
     // 1. Initialize infrastructure
-    m.InitInfra()
+    if err := m.InitInfra(); err != nil {
+        return fmt.Errorf("failed to initialize: %w", err)
+    }
 
     // 2. Validate name (delegates to validator)
-    normalized := m.validator.NormalizeName(name)
+    normalized, err := m.validator.NormalizeName(name)
+    if err != nil {
+        return fmt.Errorf("invalid name: %w", err)
+    }
 
     // 3. Check profile exists (delegates to settings)
-    exists := m.settings.Exists(normalized)
+    exists, err := m.settings.Exists(normalized)
+    if err != nil {
+        return fmt.Errorf("failed to check profile: %w", err)
+    }
+    if !exists {
+        return fmt.Errorf("profile %q not found", normalized)
+    }
 
     // 4. Backup current settings (delegates to backup)
-    m.backup.BackupFile(activeSettingsPath)
+    if err := m.backup.BackupFile(activeSettingsPath); err != nil {
+        return fmt.Errorf("failed to backup: %w", err)
+    }
 
     // 5. Copy profile to active location (delegates to storage)
-    m.storage.CopyFile(storedPath, activeSettingsPath)
+    if err := m.storage.CopyFile(storedPath, activeSettingsPath); err != nil {
+        return fmt.Errorf("failed to copy: %w", err)
+    }
 
     // 6. Update active state (delegates to settings)
-    m.settings.SetActiveName(normalized)
+    if err := m.settings.SetActiveName(normalized); err != nil {
+        return fmt.Errorf("failed to update state: %w", err)
+    }
+
+    return nil
 }
 ```
 

@@ -14,11 +14,11 @@ The codebase has been refactored from a monolithic Manager (~400 lines) into a c
 
 **New Structure**:
 - **Domain Layer** (`internal/ccs/domain/`) - Core business errors
-- **Validator Service** (`internal/ccs/validator/`) - Name validation logic (60 lines)
-- **Storage Service** (`internal/ccs/storage/`) - Secure file operations (140 lines)
-- **Backup Service** (`internal/ccs/backup/`) - Content-addressed backups (200 lines)
-- **Settings Service** (`internal/ccs/settings/`) - Settings persistence (120 lines)
-- **Manager** - Thin orchestrator coordinating services (120 lines)
+- **Validator Service** (`internal/ccs/validator/`) - Name validation logic
+- **Storage Service** (`internal/ccs/storage/`) - Secure file operations
+- **Backup Service** (`internal/ccs/backup/`) - Content-addressed backups
+- **Settings Service** (`internal/ccs/settings/`) - Settings persistence
+- **Manager** - Thin orchestrator coordinating services
 
 **Benefits**:
 - ✅ **Single Responsibility**: Each service has one clear purpose

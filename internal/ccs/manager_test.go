@@ -21,7 +21,7 @@ func newTestManager(t *testing.T) *Manager {
 
 func TestCalculateHash(t *testing.T) {
 	mgr := newTestManager(t)
-	path := filepath.Join(mgr.claudeDir(), "file.json")
+	path := filepath.Join(mgr.paths.ClaudeDir(), "file.json")
 	if err := afero.WriteFile(mgr.FileSystem(), path, []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestCalculateHash(t *testing.T) {
 		t.Fatalf("expected non-empty hash")
 	}
 
-	emptyPath := filepath.Join(mgr.claudeDir(), "empty.json")
+	emptyPath := filepath.Join(mgr.paths.ClaudeDir(), "empty.json")
 	if err := afero.WriteFile(mgr.FileSystem(), emptyPath, []byte{}, 0o644); err != nil {
 		t.Fatalf("write empty: %v", err)
 	}
@@ -59,49 +59,6 @@ func TestGetActiveSettingsName(t *testing.T) {
 	}
 	if got := mgr.GetActiveSettingsName(); got != expected {
 		t.Fatalf("expected %q, got %q", expected, got)
-	}
-}
-
-func TestBackupFileCreatesAndUpdates(t *testing.T) {
-	mgr := newTestManager(t)
-	path := mgr.ActiveSettingsPath()
-	time1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	time2 := time1.Add(2 * time.Second)
-
-	mgr.SetNow(func() time.Time { return time1 })
-	if err := afero.WriteFile(mgr.FileSystem(), path, []byte("content"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if err := mgr.backupFile(path); err != nil {
-		t.Fatalf("backup: %v", err)
-	}
-
-	hash, err := mgr.CalculateHash(path)
-	if err != nil {
-		t.Fatalf("hash: %v", err)
-	}
-	backupPath := filepath.Join(mgr.BackupDir(), hash+".json")
-	info, err := mgr.FileSystem().Stat(backupPath)
-	if err != nil {
-		t.Fatalf("stat backup: %v", err)
-	}
-	if !info.ModTime().Equal(time1) {
-		t.Fatalf("expected mod time %v, got %v", time1, info.ModTime())
-	}
-
-	mgr.SetNow(func() time.Time { return time2 })
-	if err := afero.WriteFile(mgr.FileSystem(), path, []byte("content"), 0o644); err != nil {
-		t.Fatalf("write again: %v", err)
-	}
-	if err := mgr.backupFile(path); err != nil {
-		t.Fatalf("backup update: %v", err)
-	}
-	info, err = mgr.FileSystem().Stat(backupPath)
-	if err != nil {
-		t.Fatalf("stat backup second: %v", err)
-	}
-	if !info.ModTime().Equal(time2) {
-		t.Fatalf("expected mod time %v, got %v", time2, info.ModTime())
 	}
 }
 
@@ -395,41 +352,12 @@ func TestPruneBackups(t *testing.T) {
 
 func TestCalculateHashMissingFile(t *testing.T) {
 	mgr := newTestManager(t)
-	hash, err := mgr.CalculateHash(filepath.Join(mgr.claudeDir(), "missing.json"))
+	hash, err := mgr.CalculateHash(filepath.Join(mgr.paths.ClaudeDir(), "missing.json"))
 	if err != nil {
 		t.Fatalf("expected no error for missing file: %v", err)
 	}
 	if hash != "" {
 		t.Fatalf("expected empty hash for missing file")
-	}
-}
-
-func TestCopyFileOverwritesDestination(t *testing.T) {
-	mgr := newTestManager(t)
-	src := filepath.Join(mgr.claudeDir(), "src.json")
-	dst := filepath.Join(mgr.claudeDir(), "dst.json")
-	if err := afero.WriteFile(mgr.FileSystem(), src, []byte("first"), 0o644); err != nil {
-		t.Fatalf("write src: %v", err)
-	}
-	if err := afero.WriteFile(mgr.FileSystem(), dst, []byte("old"), 0o644); err != nil {
-		t.Fatalf("write dst: %v", err)
-	}
-	if err := mgr.copyFile(src, dst); err != nil {
-		t.Fatalf("copy file: %v", err)
-	}
-	content, err := afero.ReadFile(mgr.FileSystem(), dst)
-	if err != nil {
-		t.Fatalf("read dst: %v", err)
-	}
-	if string(content) != "first" {
-		t.Fatalf("expected copied content, got %s", content)
-	}
-}
-
-func TestCopyFileMissingSource(t *testing.T) {
-	mgr := newTestManager(t)
-	if err := mgr.copyFile(filepath.Join(mgr.claudeDir(), "missing"), filepath.Join(mgr.claudeDir(), "dst")); err == nil {
-		t.Fatalf("expected error for missing source")
 	}
 }
 
@@ -597,35 +525,6 @@ func TestPruneBackupsNoDeletion(t *testing.T) {
 	}
 	if deleted != 0 {
 		t.Fatalf("expected no deletions, got %d", deleted)
-	}
-}
-
-func TestBackupFileCreatesBackupForEmptyFile(t *testing.T) {
-	mgr := newTestManager(t)
-	path := mgr.ActiveSettingsPath()
-	if err := afero.WriteFile(mgr.FileSystem(), path, []byte{}, 0o644); err != nil {
-		t.Fatalf("write empty: %v", err)
-	}
-	if err := mgr.backupFile(path); err != nil {
-		t.Fatalf("backup empty: %v", err)
-	}
-	entries, err := afero.ReadDir(mgr.FileSystem(), mgr.BackupDir())
-	if err != nil {
-		t.Fatalf("read backup dir: %v", err)
-	}
-	// Empty files now create a backup with hash "empty"
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 backup for empty file, got %d", len(entries))
-	}
-	if entries[0].Name() != "empty.json" {
-		t.Fatalf("expected backup named 'empty.json', got %s", entries[0].Name())
-	}
-}
-
-func TestBackupFileMissingSource(t *testing.T) {
-	mgr := newTestManager(t)
-	if err := mgr.backupFile(filepath.Join(mgr.claudeDir(), "missing.json")); err != nil {
-		t.Fatalf("expected no error for missing file: %v", err)
 	}
 }
 

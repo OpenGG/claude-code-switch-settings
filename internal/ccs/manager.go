@@ -4,25 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/afero"
 
 	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/backup"
 	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/domain"
+	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/paths"
 	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/settings"
 	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/storage"
 	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/validator"
-)
-
-// Path constants
-const (
-	claudeDirName    = ".claude"
-	settingsFileName = "settings.json"
-	activeFileName   = "settings.json.active"
-	storeDirName     = "switch-settings"
-	backupDirName    = "switch-settings-backup"
 )
 
 // Re-export domain errors for backward compatibility
@@ -46,7 +37,7 @@ var (
 //   - backup: Content-addressed backup management
 //   - settings: Settings persistence and retrieval
 type Manager struct {
-	homeDir string
+	paths *paths.PathBuilder
 
 	// Services (dependency injection)
 	validator *validator.Validator
@@ -58,23 +49,23 @@ type Manager struct {
 // NewManager constructs a Manager using the provided filesystem and home directory.
 // If logger is nil, a default logger will be created that discards all output.
 func NewManager(fs afero.Fs, homeDir string, logger *slog.Logger) *Manager {
+	// Create path builder
+	pathBuilder := paths.New(homeDir)
+
 	// Create storage layer
 	stor := storage.New(fs)
 
 	// Create backup service
-	backupDir := filepath.Join(homeDir, claudeDirName, backupDirName)
-	backupSvc := backup.New(stor, backupDir, logger)
+	backupSvc := backup.New(stor, pathBuilder.BackupDir(), logger)
 
 	// Create settings service
-	storeDir := filepath.Join(homeDir, claudeDirName, storeDirName)
-	activeState := filepath.Join(homeDir, claudeDirName, activeFileName)
-	settingsSvc := settings.New(stor, storeDir, activeState)
+	settingsSvc := settings.New(stor, pathBuilder.SettingsStoreDir(), pathBuilder.ActiveStatePath())
 
 	// Create validator
 	val := validator.New()
 
 	return &Manager{
-		homeDir:   homeDir,
+		paths:     pathBuilder,
 		validator: val,
 		storage:   stor,
 		backup:    backupSvc,
@@ -84,8 +75,8 @@ func NewManager(fs afero.Fs, homeDir string, logger *slog.Logger) *Manager {
 
 // InitInfra ensures that required directories exist.
 func (m *Manager) InitInfra() error {
-	paths := []string{m.claudeDir(), m.settingsStoreDir(), m.backupDir()}
-	for _, p := range paths {
+	dirs := []string{m.paths.ClaudeDir(), m.paths.SettingsStoreDir(), m.paths.BackupDir()}
+	for _, p := range dirs {
 		if err := m.storage.MkdirAll(p); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", p, err)
 		}
@@ -163,16 +154,16 @@ func (m *Manager) Use(name string) error {
 	if err != nil {
 		return err
 	}
-	targetPath := m.storedSettingsPath(normalized)
+	targetPath := m.paths.StoredSettingsPath(normalized)
 	if exists, err := m.storage.Exists(targetPath); err != nil {
 		return fmt.Errorf("failed to inspect target settings: %w", err)
 	} else if !exists {
 		return fmt.Errorf("settings '%s' not found", normalized)
 	}
-	if err := m.backup.BackupFile(m.activeSettingsPath()); err != nil {
+	if err := m.backup.BackupFile(m.paths.ActiveSettingsPath()); err != nil {
 		return err
 	}
-	if err := m.storage.CopyFile(targetPath, m.activeSettingsPath()); err != nil {
+	if err := m.storage.CopyFile(targetPath, m.paths.ActiveSettingsPath()); err != nil {
 		return fmt.Errorf("failed to copy settings: %w", err)
 	}
 	if err := m.SetActiveSettings(normalized); err != nil {
@@ -207,7 +198,7 @@ func (m *Manager) Save(targetName string) error {
 	if err := m.InitInfra(); err != nil {
 		return err
 	}
-	activePath := m.activeSettingsPath()
+	activePath := m.paths.ActiveSettingsPath()
 	if exists, err := m.storage.Exists(activePath); err != nil {
 		return fmt.Errorf("failed to inspect settings.json: %w", err)
 	} else if !exists {
@@ -217,7 +208,7 @@ func (m *Manager) Save(targetName string) error {
 	if err != nil {
 		return err
 	}
-	targetPath := m.storedSettingsPath(normalized)
+	targetPath := m.paths.StoredSettingsPath(normalized)
 	if err := m.backup.BackupFile(targetPath); err != nil {
 		return err
 	}
@@ -263,7 +254,7 @@ func (m *Manager) ListSettings() ([]ListEntry, error) {
 	if err := m.InitInfra(); err != nil {
 		return nil, err
 	}
-	return m.settings.ListEntries(m.activeSettingsPath(), m.CalculateHash)
+	return m.settings.ListEntries(m.paths.ActiveSettingsPath(), m.CalculateHash)
 }
 
 // PruneBackups removes backup files older than the specified duration.
@@ -291,22 +282,22 @@ func (m *Manager) PruneBackups(olderThan time.Duration) (int, error) {
 
 // ActiveSettingsPath returns the path to settings.json for consumers like tests.
 func (m *Manager) ActiveSettingsPath() string {
-	return m.activeSettingsPath()
+	return m.paths.ActiveSettingsPath()
 }
 
 // ActiveStatePath returns the path to settings.json.active for consumers like tests.
 func (m *Manager) ActiveStatePath() string {
-	return m.activeStatePath()
+	return m.paths.ActiveStatePath()
 }
 
 // BackupDir returns the backup directory path.
 func (m *Manager) BackupDir() string {
-	return m.backupDir()
+	return m.paths.BackupDir()
 }
 
 // SettingsStoreDir returns the store directory path.
 func (m *Manager) SettingsStoreDir() string {
-	return m.settingsStoreDir()
+	return m.paths.SettingsStoreDir()
 }
 
 // FileSystem exposes the underlying filesystem.
@@ -320,50 +311,10 @@ func (m *Manager) StoredSettingsPath(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return m.storedSettingsPath(normalized), nil
+	return m.paths.StoredSettingsPath(normalized), nil
 }
 
-// SetNow overrides the clock used by the manager.
+// SetNow overrides the clock used by the manager for testing.
 func (m *Manager) SetNow(now func() time.Time) {
 	m.backup.SetNow(now)
-}
-
-// backupFile is exposed for testing purposes.
-func (m *Manager) backupFile(path string) error {
-	return m.backup.BackupFile(path)
-}
-
-// copyFile is exposed for testing purposes.
-func (m *Manager) copyFile(src, dst string) error {
-	return m.storage.CopyFile(src, dst)
-}
-
-// now is exposed for testing purposes.
-func (m *Manager) now() time.Time {
-	return time.Now()
-}
-
-// Path helpers (using constants from paths.go)
-func (m *Manager) claudeDir() string {
-	return filepath.Join(m.homeDir, claudeDirName)
-}
-
-func (m *Manager) activeSettingsPath() string {
-	return filepath.Join(m.homeDir, claudeDirName, settingsFileName)
-}
-
-func (m *Manager) activeStatePath() string {
-	return filepath.Join(m.homeDir, claudeDirName, activeFileName)
-}
-
-func (m *Manager) settingsStoreDir() string {
-	return filepath.Join(m.homeDir, claudeDirName, storeDirName)
-}
-
-func (m *Manager) backupDir() string {
-	return filepath.Join(m.homeDir, claudeDirName, backupDirName)
-}
-
-func (m *Manager) storedSettingsPath(name string) string {
-	return filepath.Join(m.homeDir, claudeDirName, storeDirName, name+".json")
 }

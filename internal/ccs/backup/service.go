@@ -48,6 +48,11 @@ func (s *Service) SetNow(now func() time.Time) {
 // Empty files return a special "empty" marker and log a warning.
 // Missing files return an empty string without error.
 func (s *Service) CalculateHash(path string) (string, error) {
+	// Validate path safety before accessing to prevent symlink attacks
+	if err := s.storage.ValidatePathSafety(path); err != nil {
+		return "", fmt.Errorf("path validation failed: %w", err)
+	}
+
 	info, err := s.storage.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -92,6 +97,7 @@ func (s *Service) CalculateHash(path string) (string, error) {
 //   - The prune command can use mtime to determine backup age
 //   - Each unique settings version is preserved exactly once
 func (s *Service) BackupFile(path string) (err error) {
+	// Note: CalculateHash already validates path safety via ValidatePathSafety
 	hash, err := s.CalculateHash(path)
 	if err != nil {
 		return err
