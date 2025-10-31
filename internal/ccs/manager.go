@@ -1,223 +1,151 @@
 package ccs
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"regexp"
-	"sort"
-	"strings"
+	"log/slog"
 	"time"
 
 	"github.com/spf13/afero"
+
+	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/backup"
+	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/domain"
+	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/paths"
+	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/settings"
+	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/storage"
+	"github.com/OpenGG/claude-code-switch-settings/internal/ccs/validator"
 )
 
+// Re-export domain errors for backward compatibility
 var (
-	errNameEmpty        = errors.New("Name cannot be empty.")
-	errNameDot          = errors.New("Name cannot be '.' or '..'.")
-	errNameNonPrintable = errors.New("Name contains non-printable ASCII characters.")
-	errNameInvalidChars = errors.New("Name contains invalid characters (<>:\"/|?*).")
-	errNameReserved     = errors.New("Name is a reserved system filename.")
+	ErrSettingsNameEmpty        = domain.ErrSettingsNameEmpty
+	ErrSettingsNameDot          = domain.ErrSettingsNameDot
+	ErrSettingsNameNonPrintable = domain.ErrSettingsNameNonPrintable
+	ErrSettingsNameInvalidChars = domain.ErrSettingsNameInvalidChars
+	ErrSettingsNameReserved     = domain.ErrSettingsNameReserved
+	ErrSettingsNameNullByte     = domain.ErrSettingsNameNullByte
 )
 
-var reservedNamePattern = regexp.MustCompile(`^(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])$`)
-var invalidCharsPattern = regexp.MustCompile(`[<>:"/\\|?*]`)
-
-// Manager coordinates settings operations using an injected filesystem and clock.
+// Manager coordinates settings operations using injected services.
+// It provides atomic file operations, content-addressed backups, and comprehensive
+// validation of settings names to prevent security issues like path traversal and
+// symlink attacks.
+//
+// This is a thin orchestrator that delegates to specialized services:
+//   - validator: Name validation and normalization
+//   - storage: Low-level file operations with security checks
+//   - backup: Content-addressed backup management
+//   - settings: Settings persistence and retrieval
 type Manager struct {
-	fs      afero.Fs
-	homeDir string
-	now     func() time.Time
+	paths *paths.PathBuilder
+
+	// Services (dependency injection)
+	validator *validator.Validator
+	storage   *storage.Storage
+	backup    *backup.Service
+	settings  *settings.Service
 }
 
 // NewManager constructs a Manager using the provided filesystem and home directory.
-func NewManager(fs afero.Fs, homeDir string) *Manager {
-	return &Manager{fs: fs, homeDir: homeDir, now: time.Now}
+// If logger is nil, a default logger will be created that discards all output.
+func NewManager(fs afero.Fs, homeDir string, logger *slog.Logger) *Manager {
+	// Create path builder
+	pathBuilder := paths.New(homeDir)
+
+	// Create storage layer
+	stor := storage.New(fs)
+
+	// Create backup service
+	backupSvc := backup.New(stor, pathBuilder.BackupDir(), logger)
+
+	// Create settings service
+	settingsSvc := settings.New(stor, pathBuilder.SettingsStoreDir(), pathBuilder.ActiveStatePath())
+
+	// Create validator
+	val := validator.New()
+
+	return &Manager{
+		paths:     pathBuilder,
+		validator: val,
+		storage:   stor,
+		backup:    backupSvc,
+		settings:  settingsSvc,
+	}
 }
 
 // InitInfra ensures that required directories exist.
 func (m *Manager) InitInfra() error {
-	paths := []string{m.claudeDir(), m.settingsStoreDir(), m.backupDir()}
-	for _, p := range paths {
-		if err := m.fs.MkdirAll(p, 0o755); err != nil {
+	dirs := []string{m.paths.ClaudeDir(), m.paths.SettingsStoreDir(), m.paths.BackupDir()}
+	for _, p := range dirs {
+		if err := m.storage.MkdirAll(p); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", p, err)
 		}
 	}
 	return nil
 }
 
-// CalculateMD5 returns the MD5 hash of the given file.
-func (m *Manager) CalculateMD5(path string) (string, error) {
-	info, err := m.fs.Stat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", nil
-		}
-		return "", fmt.Errorf("failed to stat file for hashing: %w", err)
-	}
-	if info.Size() == 0 {
-		return "", nil
-	}
-
-	f, err := m.fs.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to open file for hashing: %w", err)
-	}
-	defer f.Close()
-
-	h := md5.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("failed to hash file: %w", err)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// backupFile copies the provided file into the backup directory.
-func (m *Manager) backupFile(path string) (err error) {
-	md5sum, err := m.CalculateMD5(path)
-	if err != nil {
-		return err
-	}
-	if md5sum == "" {
-		return nil
-	}
-
-	source, err := m.fs.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("failed to open file for backup: %w", err)
-	}
-	defer source.Close()
-
-	backupPath := filepath.Join(m.backupDir(), md5sum+".json")
-	now := m.now()
-	if _, err := m.fs.Stat(backupPath); err == nil {
-		if err := m.fs.Chtimes(backupPath, now, now); err != nil {
-			return fmt.Errorf("failed to update backup timestamp: %w", err)
-		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("failed to stat backup: %w", err)
-	}
-
-	dst, err := m.fs.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return fmt.Errorf("failed to create backup: %w", err)
-	}
-
-	_, copyErr := io.Copy(dst, source)
-	closeErr := dst.Close()
-
-	if copyErr != nil {
-		m.fs.Remove(backupPath)
-		return fmt.Errorf("failed to copy backup: %w", copyErr)
-	}
-	if closeErr != nil {
-		m.fs.Remove(backupPath)
-		return fmt.Errorf("failed to close backup: %w", closeErr)
-	}
-
-	if err := m.fs.Chtimes(backupPath, now, now); err != nil {
-		return fmt.Errorf("failed to update backup timestamp: %w", err)
-	}
-
-	return nil
+// CalculateHash returns the SHA-256 hash of the given file.
+// Empty files return a special "empty" marker and log a warning.
+// Missing files return an empty string without error.
+func (m *Manager) CalculateHash(path string) (string, error) {
+	return m.backup.CalculateHash(path)
 }
 
 // GetActiveSettingsName returns the currently active settings name.
 func (m *Manager) GetActiveSettingsName() string {
-	content, err := afero.ReadFile(m.fs, m.activeStatePath())
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(content))
+	return m.settings.GetActiveName()
 }
 
 // SetActiveSettings sets the active settings name.
 func (m *Manager) SetActiveSettings(name string) error {
-	return afero.WriteFile(m.fs, m.activeStatePath(), []byte(name), 0o644)
+	return m.settings.SetActiveName(name)
 }
 
-// ValidateSettingsName validates the provided settings name.
+// ValidateSettingsName validates the provided settings name for security and compatibility.
+//
+// The function checks for:
+//   - Empty names or whitespace-only names
+//   - Dot navigation (. or ..)
+//   - Null bytes (path traversal attack vector)
+//   - Non-printable ASCII characters
+//   - Invalid filesystem characters (<>:"/\|?*)
+//   - Reserved Windows filenames (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+//
+// Returns (true, nil) if valid, or (false, error) with a descriptive error.
 func (m *Manager) ValidateSettingsName(name string) (bool, error) {
-	trimmed := strings.TrimSpace(name)
-	if len(trimmed) == 0 {
-		return false, errNameEmpty
-	}
-	if trimmed == "." || trimmed == ".." {
-		return false, errNameDot
-	}
-	for _, r := range trimmed {
-		if r < 0x20 || r > 0x7e {
-			return false, errNameNonPrintable
-		}
-		if r == 0x7f {
-			return false, errNameNonPrintable
-		}
-	}
-	if invalidCharsPattern.MatchString(trimmed) {
-		return false, errNameInvalidChars
-	}
-	if reservedNamePattern.MatchString(trimmed) {
-		return false, errNameReserved
-	}
-	return true, nil
+	return m.validator.ValidateName(name)
 }
 
 func (m *Manager) normalizeSettingsName(name string) (string, error) {
-	trimmed := strings.TrimSpace(name)
-	if ok, err := m.ValidateSettingsName(trimmed); !ok {
-		if err != nil {
-			return "", err
-		}
-		return "", errors.New("invalid settings name")
+	normalized, err := m.validator.NormalizeName(name)
+	if err != nil {
+		return "", fmt.Errorf("invalid settings name: %w", err)
 	}
-	return trimmed, nil
+	return normalized, nil
 }
 
-// copyFile copies a file from src to dst, overwriting the destination.
-func (m *Manager) copyFile(src, dst string) error {
-	source, err := m.fs.Open(src)
-	if err != nil {
-		return err
-	}
-	defer source.Close()
-
-	dir := filepath.Dir(dst)
-	if err := m.fs.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp := dst + ".tmp"
-	dest, err := m.fs.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	_, copyErr := io.Copy(dest, source)
-	closeErr := dest.Close()
-
-	if copyErr != nil {
-		m.fs.Remove(tmp)
-		return copyErr
-	}
-	if closeErr != nil {
-		m.fs.Remove(tmp)
-		return closeErr
-	}
-
-	if err := m.fs.Remove(dst); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	return m.fs.Rename(tmp, dst)
-}
-
-// Use activates the target settings by copying them into the active location.
+// Use activates the specified settings profile by copying it to the active settings location.
+//
+// The operation performs the following steps atomically:
+//  1. Validates the profile name (see ValidateSettingsName)
+//  2. Verifies the profile exists in the settings store
+//  3. Backs up the current active settings (if any)
+//  4. Atomically copies the profile to ~/.claude/settings.json
+//  5. Updates the active state file to track the current profile
+//
+// The operation is atomic - if it fails at any step, the current settings remain unchanged.
+//
+// Returns an error if:
+//   - The profile name is invalid (see ValidateSettingsName)
+//   - The profile doesn't exist in the settings store
+//   - File operations fail (permissions, disk space, etc.)
+//
+// Example:
+//
+//	err := mgr.Use("work")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 func (m *Manager) Use(name string) error {
 	if err := m.InitInfra(); err != nil {
 		return err
@@ -226,16 +154,16 @@ func (m *Manager) Use(name string) error {
 	if err != nil {
 		return err
 	}
-	targetPath := m.storedSettingsPath(normalized)
-	if exists, err := afero.Exists(m.fs, targetPath); err != nil {
+	targetPath := m.paths.StoredSettingsPath(normalized)
+	if exists, err := m.storage.Exists(targetPath); err != nil {
 		return fmt.Errorf("failed to inspect target settings: %w", err)
 	} else if !exists {
 		return fmt.Errorf("settings '%s' not found", normalized)
 	}
-	if err := m.backupFile(m.activeSettingsPath()); err != nil {
+	if err := m.backup.BackupFile(m.paths.ActiveSettingsPath()); err != nil {
 		return err
 	}
-	if err := m.copyFile(targetPath, m.activeSettingsPath()); err != nil {
+	if err := m.storage.CopyFile(targetPath, m.paths.ActiveSettingsPath()); err != nil {
 		return fmt.Errorf("failed to copy settings: %w", err)
 	}
 	if err := m.SetActiveSettings(normalized); err != nil {
@@ -244,13 +172,34 @@ func (m *Manager) Use(name string) error {
 	return nil
 }
 
-// Save writes the current active settings to the specified target and activates it.
+// Save persists the current active settings to a named profile in the settings store.
+//
+// The operation performs the following steps atomically:
+//  1. Validates the target profile name (see ValidateSettingsName)
+//  2. Verifies that ~/.claude/settings.json exists
+//  3. Backs up the existing profile (if overwriting)
+//  4. Atomically copies current settings to the profile location
+//  5. Updates the active state to track this profile
+//
+// The operation is atomic - if it fails at any step, existing profiles remain unchanged.
+//
+// Returns an error if:
+//   - The active settings.json doesn't exist
+//   - The target profile name is invalid
+//   - File operations fail (permissions, disk space, etc.)
+//
+// Example:
+//
+//	err := mgr.Save("work-settings")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 func (m *Manager) Save(targetName string) error {
 	if err := m.InitInfra(); err != nil {
 		return err
 	}
-	activePath := m.activeSettingsPath()
-	if exists, err := afero.Exists(m.fs, activePath); err != nil {
+	activePath := m.paths.ActiveSettingsPath()
+	if exists, err := m.storage.Exists(activePath); err != nil {
 		return fmt.Errorf("failed to inspect settings.json: %w", err)
 	} else if !exists {
 		return errors.New("settings.json not found. Nothing to save.")
@@ -259,11 +208,11 @@ func (m *Manager) Save(targetName string) error {
 	if err != nil {
 		return err
 	}
-	targetPath := m.storedSettingsPath(normalized)
-	if err := m.backupFile(targetPath); err != nil {
+	targetPath := m.paths.StoredSettingsPath(normalized)
+	if err := m.backup.BackupFile(targetPath); err != nil {
 		return err
 	}
-	if err := m.copyFile(activePath, targetPath); err != nil {
+	if err := m.storage.CopyFile(activePath, targetPath); err != nil {
 		return fmt.Errorf("failed to store settings: %w", err)
 	}
 	if err := m.SetActiveSettings(normalized); err != nil {
@@ -272,145 +221,88 @@ func (m *Manager) Save(targetName string) error {
 	return nil
 }
 
-// StoredSettings returns the names of all stored settings sorted lexicographically.
+// StoredSettings returns the names of all stored settings profiles, sorted lexicographically.
+//
+// The function scans the settings store directory (~/.claude/switch-settings/) and returns
+// only the base names (without .json extension) of regular files.
+//
+// Returns an error if the settings store directory cannot be read.
 func (m *Manager) StoredSettings() ([]string, error) {
 	if err := m.InitInfra(); err != nil {
 		return nil, err
 	}
-	dir := m.settingsStoreDir()
-	entries, err := afero.ReadDir(m.fs, dir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read settings store: %w", err)
-	}
-	var names []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if strings.HasSuffix(name, ".json") {
-			names = append(names, strings.TrimSuffix(name, ".json"))
-		}
-	}
-	sort.Strings(names)
-	return names, nil
+	return m.settings.ListStored()
 }
 
-// ListEntries describes each available settings entry for list output.
-type ListEntry struct {
-	Name       string
-	Prefix     string
-	Qualifiers []string
-	Plain      bool
-}
+// ListEntry describes each available settings entry for list output.
+type ListEntry = settings.ListEntry
 
-// ListSettings computes the list entries for presentation.
+// ListSettings computes formatted entries for display in the list command.
+//
+// Each entry includes:
+//   - Name: The profile name
+//   - Prefix: Visual indicator (* = active, ! = missing, space = inactive)
+//   - Qualifiers: Tags like "active", "modified", "missing!"
+//   - Plain: Whether to skip bracket formatting
+//
+// The function compares stored profiles with the active settings and annotates
+// entries with their status. If the active profile has been modified locally,
+// it will be marked with "modified".
+//
+// Returns an error if the settings store or active settings cannot be accessed.
 func (m *Manager) ListSettings() ([]ListEntry, error) {
 	if err := m.InitInfra(); err != nil {
 		return nil, err
 	}
-	activeName := m.GetActiveSettingsName()
-	currentMD5, err := m.CalculateMD5(m.activeSettingsPath())
-	if err != nil {
-		return nil, err
-	}
-	names, err := m.StoredSettings()
-	if err != nil {
-		return nil, err
-	}
-
-	var entries []ListEntry
-	activeHandled := false
-	for _, name := range names {
-		entry := ListEntry{Name: name, Prefix: " "}
-		if name == activeName {
-			entry.Prefix = "*"
-			activeHandled = true
-			storedMD5, err := m.CalculateMD5(m.storedSettingsPath(name))
-			if err != nil {
-				return nil, err
-			}
-			entry.Qualifiers = append(entry.Qualifiers, "active")
-			if currentMD5 != "" && storedMD5 != "" && currentMD5 != storedMD5 {
-				entry.Qualifiers = append(entry.Qualifiers, "modified")
-			}
-		} else {
-			entry.Prefix = " "
-		}
-		entries = append(entries, entry)
-	}
-
-	if activeName != "" && !activeHandled {
-		entries = append(entries, ListEntry{
-			Name:       activeName,
-			Prefix:     "!",
-			Qualifiers: []string{"active", "missing!"},
-		})
-	} else if activeName == "" && currentMD5 != "" {
-		entries = append(entries, ListEntry{
-			Name:   "(Current settings.json is unsaved)",
-			Prefix: "*",
-			Plain:  true,
-		})
-	}
-
-	return entries, nil
+	return m.settings.ListEntries(m.paths.ActiveSettingsPath(), m.CalculateHash)
 }
 
-// PruneBackups removes backup files older than the specified cutoff.
+// PruneBackups removes backup files older than the specified duration.
+//
+// The function uses modification time (mtime) to determine backup age. Since
+// content-addressed backups update mtime on each backup event, this effectively
+// prunes backups that haven't been referenced recently.
+//
+// Returns the number of backups deleted and any error encountered.
+//
+// Example:
+//
+//	// Delete backups older than 30 days
+//	count, err := mgr.PruneBackups(30 * 24 * time.Hour)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	fmt.Printf("Deleted %d backups\n", count)
 func (m *Manager) PruneBackups(olderThan time.Duration) (int, error) {
 	if err := m.InitInfra(); err != nil {
 		return 0, err
 	}
-	dir := m.backupDir()
-	entries, err := afero.ReadDir(m.fs, dir)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read backup directory: %w", err)
-	}
-	cutoff := m.now().Add(-olderThan)
-	deleted := 0
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		info, err := m.fs.Stat(path)
-		if err != nil {
-			return deleted, fmt.Errorf("failed to stat backup: %w", err)
-		}
-		if info.ModTime().Before(cutoff) {
-			if err := m.fs.Remove(path); err != nil {
-				return deleted, fmt.Errorf("failed to delete backup: %w", err)
-			}
-			deleted++
-		}
-	}
-	return deleted, nil
+	return m.backup.PruneBackups(olderThan)
 }
 
 // ActiveSettingsPath returns the path to settings.json for consumers like tests.
 func (m *Manager) ActiveSettingsPath() string {
-	return m.activeSettingsPath()
+	return m.paths.ActiveSettingsPath()
 }
 
 // ActiveStatePath returns the path to settings.json.active for consumers like tests.
 func (m *Manager) ActiveStatePath() string {
-	return m.activeStatePath()
+	return m.paths.ActiveStatePath()
 }
 
 // BackupDir returns the backup directory path.
 func (m *Manager) BackupDir() string {
-	return m.backupDir()
+	return m.paths.BackupDir()
 }
 
 // SettingsStoreDir returns the store directory path.
 func (m *Manager) SettingsStoreDir() string {
-	return m.settingsStoreDir()
+	return m.paths.SettingsStoreDir()
 }
 
 // FileSystem exposes the underlying filesystem.
 func (m *Manager) FileSystem() afero.Fs {
-	return m.fs
+	return m.storage.FileSystem()
 }
 
 // StoredSettingsPath returns the full path to a stored settings file.
@@ -419,14 +311,10 @@ func (m *Manager) StoredSettingsPath(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return m.storedSettingsPath(normalized), nil
+	return m.paths.StoredSettingsPath(normalized), nil
 }
 
-// SetNow overrides the clock used by the manager.
+// SetNow overrides the clock used by the manager for testing.
 func (m *Manager) SetNow(now func() time.Time) {
-	if now == nil {
-		m.now = time.Now
-		return
-	}
-	m.now = now
+	m.backup.SetNow(now)
 }

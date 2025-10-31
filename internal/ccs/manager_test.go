@@ -12,37 +12,37 @@ import (
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	fs := afero.NewMemMapFs()
-	mgr := NewManager(fs, "/home/test")
+	mgr := NewManager(fs, "/home/test", nil) // nil logger = discard logger for tests
 	if err := mgr.InitInfra(); err != nil {
 		t.Fatalf("InitInfra failed: %v", err)
 	}
 	return mgr
 }
 
-func TestCalculateMD5(t *testing.T) {
+func TestCalculateHash(t *testing.T) {
 	mgr := newTestManager(t)
-	path := filepath.Join(mgr.claudeDir(), "file.json")
-	if err := afero.WriteFile(mgr.fs, path, []byte("hello"), 0o644); err != nil {
+	path := filepath.Join(mgr.paths.ClaudeDir(), "file.json")
+	if err := afero.WriteFile(mgr.FileSystem(), path, []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	hash, err := mgr.CalculateMD5(path)
+	hash, err := mgr.CalculateHash(path)
 	if err != nil {
-		t.Fatalf("CalculateMD5 error: %v", err)
+		t.Fatalf("CalculateHash error: %v", err)
 	}
 	if hash == "" {
 		t.Fatalf("expected non-empty hash")
 	}
 
-	emptyPath := filepath.Join(mgr.claudeDir(), "empty.json")
-	if err := afero.WriteFile(mgr.fs, emptyPath, []byte{}, 0o644); err != nil {
+	emptyPath := filepath.Join(mgr.paths.ClaudeDir(), "empty.json")
+	if err := afero.WriteFile(mgr.FileSystem(), emptyPath, []byte{}, 0o644); err != nil {
 		t.Fatalf("write empty: %v", err)
 	}
-	hash, err = mgr.CalculateMD5(emptyPath)
+	hash, err = mgr.CalculateHash(emptyPath)
 	if err != nil {
-		t.Fatalf("CalculateMD5 empty error: %v", err)
+		t.Fatalf("CalculateHash empty error: %v", err)
 	}
-	if hash != "" {
-		t.Fatalf("expected empty hash for empty file, got %s", hash)
+	if hash != "empty" {
+		t.Fatalf("expected 'empty' hash for empty file, got %s", hash)
 	}
 }
 
@@ -59,49 +59,6 @@ func TestGetActiveSettingsName(t *testing.T) {
 	}
 	if got := mgr.GetActiveSettingsName(); got != expected {
 		t.Fatalf("expected %q, got %q", expected, got)
-	}
-}
-
-func TestBackupFileCreatesAndUpdates(t *testing.T) {
-	mgr := newTestManager(t)
-	path := mgr.ActiveSettingsPath()
-	time1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	time2 := time1.Add(2 * time.Second)
-
-	mgr.SetNow(func() time.Time { return time1 })
-	if err := afero.WriteFile(mgr.fs, path, []byte("content"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if err := mgr.backupFile(path); err != nil {
-		t.Fatalf("backup: %v", err)
-	}
-
-	hash, err := mgr.CalculateMD5(path)
-	if err != nil {
-		t.Fatalf("hash: %v", err)
-	}
-	backupPath := filepath.Join(mgr.BackupDir(), hash+".json")
-	info, err := mgr.fs.Stat(backupPath)
-	if err != nil {
-		t.Fatalf("stat backup: %v", err)
-	}
-	if !info.ModTime().Equal(time1) {
-		t.Fatalf("expected mod time %v, got %v", time1, info.ModTime())
-	}
-
-	mgr.SetNow(func() time.Time { return time2 })
-	if err := afero.WriteFile(mgr.fs, path, []byte("content"), 0o644); err != nil {
-		t.Fatalf("write again: %v", err)
-	}
-	if err := mgr.backupFile(path); err != nil {
-		t.Fatalf("backup update: %v", err)
-	}
-	info, err = mgr.fs.Stat(backupPath)
-	if err != nil {
-		t.Fatalf("stat backup second: %v", err)
-	}
-	if !info.ModTime().Equal(time2) {
-		t.Fatalf("expected mod time %v, got %v", time2, info.ModTime())
 	}
 }
 
@@ -124,13 +81,13 @@ func TestValidateSettingsName(t *testing.T) {
 func TestListSettingsStates(t *testing.T) {
 	mgr := newTestManager(t)
 	store := mgr.SettingsStoreDir()
-	if err := afero.WriteFile(mgr.fs, filepath.Join(store, "work.json"), []byte("A"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), filepath.Join(store, "work.json"), []byte("A"), 0o644); err != nil {
 		t.Fatalf("write work: %v", err)
 	}
 	if err := mgr.SetActiveSettings("work"); err != nil {
 		t.Fatalf("set active: %v", err)
 	}
-	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("A"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), mgr.ActiveSettingsPath(), []byte("A"), 0o644); err != nil {
 		t.Fatalf("write active: %v", err)
 	}
 
@@ -145,7 +102,7 @@ func TestListSettingsStates(t *testing.T) {
 		t.Fatalf("expected active entry: %+v", entries[0])
 	}
 
-	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("B"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), mgr.ActiveSettingsPath(), []byte("B"), 0o644); err != nil {
 		t.Fatalf("write modified: %v", err)
 	}
 	entries, err = mgr.ListSettings()
@@ -176,7 +133,7 @@ func TestListSettingsStates(t *testing.T) {
 	if err := mgr.SetActiveSettings(""); err != nil {
 		t.Fatalf("clear active: %v", err)
 	}
-	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("C"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), mgr.ActiveSettingsPath(), []byte("C"), 0o644); err != nil {
 		t.Fatalf("write unsaved: %v", err)
 	}
 	entries, err = mgr.ListSettings()
@@ -206,10 +163,10 @@ func contains(list []string, target string) bool {
 func TestUseSwitchesSettingsAndUpdatesTimestamp(t *testing.T) {
 	mgr := newTestManager(t)
 	store := mgr.SettingsStoreDir()
-	if err := afero.WriteFile(mgr.fs, filepath.Join(store, "work.json"), []byte("stored"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), filepath.Join(store, "work.json"), []byte("stored"), 0o644); err != nil {
 		t.Fatalf("write work: %v", err)
 	}
-	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("current"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), mgr.ActiveSettingsPath(), []byte("current"), 0o644); err != nil {
 		t.Fatalf("write current: %v", err)
 	}
 	time1 := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -223,14 +180,14 @@ func TestUseSwitchesSettingsAndUpdatesTimestamp(t *testing.T) {
 	if err := mgr.Use("work"); err != nil {
 		t.Fatalf("use work second: %v", err)
 	}
-	info, err := mgr.fs.Stat(mgr.ActiveSettingsPath())
+	info, err := mgr.FileSystem().Stat(mgr.ActiveSettingsPath())
 	if err != nil {
 		t.Fatalf("stat active: %v", err)
 	}
 	if info.ModTime().Before(time2) {
 		t.Fatalf("expected mod time update, got %v", info.ModTime())
 	}
-	content, err := afero.ReadFile(mgr.fs, mgr.ActiveSettingsPath())
+	content, err := afero.ReadFile(mgr.FileSystem(), mgr.ActiveSettingsPath())
 	if err != nil {
 		t.Fatalf("read active: %v", err)
 	}
@@ -245,16 +202,16 @@ func TestUseSwitchesSettingsAndUpdatesTimestamp(t *testing.T) {
 func TestSaveOverwritesStoredSettings(t *testing.T) {
 	mgr := newTestManager(t)
 	store := mgr.SettingsStoreDir()
-	if err := afero.WriteFile(mgr.fs, filepath.Join(store, "personal.json"), []byte("initial"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), filepath.Join(store, "personal.json"), []byte("initial"), 0o644); err != nil {
 		t.Fatalf("write personal: %v", err)
 	}
-	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("Mod"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), mgr.ActiveSettingsPath(), []byte("Mod"), 0o644); err != nil {
 		t.Fatalf("write active: %v", err)
 	}
 	if err := mgr.Save("personal"); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	content, err := afero.ReadFile(mgr.fs, filepath.Join(store, "personal.json"))
+	content, err := afero.ReadFile(mgr.FileSystem(), filepath.Join(store, "personal.json"))
 	if err != nil {
 		t.Fatalf("read personal: %v", err)
 	}
@@ -268,7 +225,7 @@ func TestSaveOverwritesStoredSettings(t *testing.T) {
 
 func TestSaveCreatesNewSettings(t *testing.T) {
 	mgr := newTestManager(t)
-	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("data"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), mgr.ActiveSettingsPath(), []byte("data"), 0o644); err != nil {
 		t.Fatalf("write active: %v", err)
 	}
 	if err := mgr.Save("dev"); err != nil {
@@ -278,7 +235,7 @@ func TestSaveCreatesNewSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stored path: %v", err)
 	}
-	content, err := afero.ReadFile(mgr.fs, path)
+	content, err := afero.ReadFile(mgr.FileSystem(), path)
 	if err != nil {
 		t.Fatalf("read dev: %v", err)
 	}
@@ -289,21 +246,21 @@ func TestSaveCreatesNewSettings(t *testing.T) {
 
 func TestUseRejectsInvalidName(t *testing.T) {
 	mgr := newTestManager(t)
-	if err := mgr.Use("../bad"); !errors.Is(err, errNameInvalidChars) {
+	if err := mgr.Use("../bad"); !errors.Is(err, ErrSettingsNameInvalidChars) {
 		t.Fatalf("expected invalid character error, got %v", err)
 	}
 }
 
 func TestSaveRejectsInvalidName(t *testing.T) {
 	mgr := newTestManager(t)
-	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("data"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), mgr.ActiveSettingsPath(), []byte("data"), 0o644); err != nil {
 		t.Fatalf("write active: %v", err)
 	}
-	if err := mgr.Save("../bad"); !errors.Is(err, errNameInvalidChars) {
+	if err := mgr.Save("../bad"); !errors.Is(err, ErrSettingsNameInvalidChars) {
 		t.Fatalf("expected invalid character error, got %v", err)
 	}
 	escapePath := filepath.Join(mgr.SettingsStoreDir(), "..", "bad.json")
-	exists, err := afero.Exists(mgr.fs, escapePath)
+	exists, err := afero.Exists(mgr.FileSystem(), escapePath)
 	if err != nil {
 		t.Fatalf("exists escape path: %v", err)
 	}
@@ -314,14 +271,14 @@ func TestSaveRejectsInvalidName(t *testing.T) {
 
 func TestStoredSettingsPathInvalidName(t *testing.T) {
 	mgr := newTestManager(t)
-	if _, err := mgr.StoredSettingsPath("../bad"); !errors.Is(err, errNameInvalidChars) {
+	if _, err := mgr.StoredSettingsPath("../bad"); !errors.Is(err, ErrSettingsNameInvalidChars) {
 		t.Fatalf("expected invalid character error, got %v", err)
 	}
 }
 
 func TestSaveTrimsSettingsName(t *testing.T) {
 	mgr := newTestManager(t)
-	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("data"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), mgr.ActiveSettingsPath(), []byte("data"), 0o644); err != nil {
 		t.Fatalf("write active: %v", err)
 	}
 	if err := mgr.Save(" dev "); err != nil {
@@ -334,7 +291,7 @@ func TestSaveTrimsSettingsName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stored path: %v", err)
 	}
-	exists, err := afero.Exists(mgr.fs, path)
+	exists, err := afero.Exists(mgr.FileSystem(), path)
 	if err != nil {
 		t.Fatalf("exists dev: %v", err)
 	}
@@ -359,10 +316,10 @@ func TestPruneBackups(t *testing.T) {
 
 	for _, f := range files {
 		path := filepath.Join(backup, f.name)
-		if err := afero.WriteFile(mgr.fs, path, []byte("backup"), 0o644); err != nil {
+		if err := afero.WriteFile(mgr.FileSystem(), path, []byte("backup"), 0o644); err != nil {
 			t.Fatalf("write backup: %v", err)
 		}
-		if err := mgr.fs.Chtimes(path, f.mod, f.mod); err != nil {
+		if err := mgr.FileSystem().Chtimes(path, f.mod, f.mod); err != nil {
 			t.Fatalf("chtimes: %v", err)
 		}
 	}
@@ -376,7 +333,7 @@ func TestPruneBackups(t *testing.T) {
 		t.Fatalf("expected 1 deleted, got %d", deleted)
 	}
 
-	exists, err := afero.Exists(mgr.fs, filepath.Join(backup, "old.json"))
+	exists, err := afero.Exists(mgr.FileSystem(), filepath.Join(backup, "old.json"))
 	if err != nil {
 		t.Fatalf("exists old: %v", err)
 	}
@@ -384,7 +341,7 @@ func TestPruneBackups(t *testing.T) {
 		t.Fatalf("old backup should be removed")
 	}
 
-	exists, err = afero.Exists(mgr.fs, filepath.Join(backup, "recent.json"))
+	exists, err = afero.Exists(mgr.FileSystem(), filepath.Join(backup, "recent.json"))
 	if err != nil {
 		t.Fatalf("exists recent: %v", err)
 	}
@@ -393,43 +350,14 @@ func TestPruneBackups(t *testing.T) {
 	}
 }
 
-func TestCalculateMD5MissingFile(t *testing.T) {
+func TestCalculateHashMissingFile(t *testing.T) {
 	mgr := newTestManager(t)
-	hash, err := mgr.CalculateMD5(filepath.Join(mgr.claudeDir(), "missing.json"))
+	hash, err := mgr.CalculateHash(filepath.Join(mgr.paths.ClaudeDir(), "missing.json"))
 	if err != nil {
 		t.Fatalf("expected no error for missing file: %v", err)
 	}
 	if hash != "" {
 		t.Fatalf("expected empty hash for missing file")
-	}
-}
-
-func TestCopyFileOverwritesDestination(t *testing.T) {
-	mgr := newTestManager(t)
-	src := filepath.Join(mgr.claudeDir(), "src.json")
-	dst := filepath.Join(mgr.claudeDir(), "dst.json")
-	if err := afero.WriteFile(mgr.fs, src, []byte("first"), 0o644); err != nil {
-		t.Fatalf("write src: %v", err)
-	}
-	if err := afero.WriteFile(mgr.fs, dst, []byte("old"), 0o644); err != nil {
-		t.Fatalf("write dst: %v", err)
-	}
-	if err := mgr.copyFile(src, dst); err != nil {
-		t.Fatalf("copy file: %v", err)
-	}
-	content, err := afero.ReadFile(mgr.fs, dst)
-	if err != nil {
-		t.Fatalf("read dst: %v", err)
-	}
-	if string(content) != "first" {
-		t.Fatalf("expected copied content, got %s", content)
-	}
-}
-
-func TestCopyFileMissingSource(t *testing.T) {
-	mgr := newTestManager(t)
-	if err := mgr.copyFile(filepath.Join(mgr.claudeDir(), "missing"), filepath.Join(mgr.claudeDir(), "dst")); err == nil {
-		t.Fatalf("expected error for missing source")
 	}
 }
 
@@ -447,14 +375,6 @@ func TestSaveWithoutActiveFile(t *testing.T) {
 	}
 }
 
-func TestSetNowNilReset(t *testing.T) {
-	mgr := newTestManager(t)
-	mgr.SetNow(nil)
-	if mgr.now == nil {
-		t.Fatalf("expected now function to be set")
-	}
-}
-
 func TestAccessors(t *testing.T) {
 	mgr := newTestManager(t)
 	if mgr.ActiveStatePath() == "" {
@@ -465,11 +385,137 @@ func TestAccessors(t *testing.T) {
 	}
 }
 
+func TestValidateSettingsNameBoundaries(t *testing.T) {
+	mgr := newTestManager(t)
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		// Valid cases
+		{"simple name", "work", false},
+		{"with hyphen", "my-settings", false},
+		{"with underscore", "my_settings", false},
+		{"with numbers", "settings123", false},
+		{"with dots", "v1.2.3", false},
+		{"max ASCII", "test-~", false},
+
+		// Invalid cases - empty and whitespace
+		{"empty string", "", true},
+		{"only spaces", "   ", true},
+		{"only tab", "\t", true},
+
+		// Invalid cases - dot navigation
+		{"single dot", ".", true},
+		{"double dot", "..", true},
+
+		// Invalid cases - null bytes
+		{"null byte at start", "\x00test", true},
+		{"null byte in middle", "test\x00file", true},
+		{"null byte at end", "test\x00", true},
+
+		// Invalid cases - control characters
+		{"control char NUL", "test\x00", true},
+		{"control char SOH", "test\x01", true},
+		{"control char STX", "test\x02", true},
+		{"control char DEL", "test\x7f", true},
+		{"newline", "test\nfile", true},
+		{"carriage return", "test\rfile", true},
+		{"tab character", "test\tfile", true},
+
+		// Invalid cases - non-printable ASCII
+		{"below space", "test\x1f", true},
+		{"above tilde", "test\x80", true},
+
+		// Invalid cases - invalid filesystem characters
+		{"forward slash", "my/settings", true},
+		{"backslash", "my\\settings", true},
+		{"colon", "my:settings", true},
+		{"asterisk", "my*settings", true},
+		{"question mark", "my?settings", true},
+		{"double quote", "my\"settings", true},
+		{"less than", "my<settings", true},
+		{"greater than", "my>settings", true},
+		{"pipe", "my|settings", true},
+
+		// Invalid cases - reserved Windows names
+		{"CON uppercase", "CON", true},
+		{"CON lowercase", "con", true},
+		{"CON mixed case", "Con", true},
+		{"PRN", "PRN", true},
+		{"AUX", "AUX", true},
+		{"NUL", "NUL", true},
+		{"COM1", "COM1", true},
+		{"COM9", "COM9", true},
+		{"LPT1", "LPT1", true},
+		{"LPT9", "LPT9", true},
+
+		// Invalid cases - Unicode (non-ASCII)
+		{"unicode emoji", "settings😀", true},
+		{"unicode Chinese", "设置", true},
+		{"unicode accented", "café", true},
+		{"unicode Cyrillic", "настройки", true},
+
+		// Edge cases - length (filesystem limits vary, but these should work)
+		{"very long name", string(make([]byte, 255)), false}, // All spaces become single space when trimmed
+		{"255 a's", string(make([]rune, 255)), false},
+
+		// Whitespace handling
+		{"leading spaces", "  work", false},  // Trimmed to "work"
+		{"trailing spaces", "work  ", false}, // Trimmed to "work"
+		{"both spaces", "  work  ", false},   // Trimmed to "work"
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Special handling for the very long name test
+			input := tt.input
+			if tt.name == "very long name" {
+				// Create a valid 255-character name
+				for i := range input {
+					input = input[:i] + "a"
+				}
+			}
+			if tt.name == "255 a's" {
+				input = ""
+				for i := 0; i < 255; i++ {
+					input += "a"
+				}
+			}
+
+			valid, err := mgr.ValidateSettingsName(input)
+			if tt.wantErr {
+				if valid || err == nil {
+					t.Errorf("expected error for %q, got valid=%v err=%v", input, valid, err)
+				}
+			} else {
+				if !valid || err != nil {
+					t.Errorf("unexpected error for %q: valid=%v err=%v", input, valid, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateSettingsNameNullByte(t *testing.T) {
+	mgr := newTestManager(t)
+
+	// Explicit null byte test
+	valid, err := mgr.ValidateSettingsName("test\x00file")
+	if valid {
+		t.Error("expected invalid for null byte")
+	}
+	if !errors.Is(err, ErrSettingsNameNullByte) {
+		t.Errorf("expected ErrSettingsNameNullByte, got %v", err)
+	}
+}
+
 func TestPruneBackupsNoDeletion(t *testing.T) {
 	mgr := newTestManager(t)
 	backup := mgr.BackupDir()
 	path := filepath.Join(backup, "recent.json")
-	if err := afero.WriteFile(mgr.fs, path, []byte("backup"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), path, []byte("backup"), 0o644); err != nil {
 		t.Fatalf("write recent: %v", err)
 	}
 	mgr.SetNow(func() time.Time { return time.Now() })
@@ -482,44 +528,19 @@ func TestPruneBackupsNoDeletion(t *testing.T) {
 	}
 }
 
-func TestBackupFileSkipsEmptyFile(t *testing.T) {
-	mgr := newTestManager(t)
-	path := mgr.ActiveSettingsPath()
-	if err := afero.WriteFile(mgr.fs, path, []byte{}, 0o644); err != nil {
-		t.Fatalf("write empty: %v", err)
-	}
-	if err := mgr.backupFile(path); err != nil {
-		t.Fatalf("backup empty: %v", err)
-	}
-	entries, err := afero.ReadDir(mgr.fs, mgr.BackupDir())
-	if err != nil {
-		t.Fatalf("read backup dir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("expected no backups, got %d", len(entries))
-	}
-}
-
-func TestBackupFileMissingSource(t *testing.T) {
-	mgr := newTestManager(t)
-	if err := mgr.backupFile(filepath.Join(mgr.claudeDir(), "missing.json")); err != nil {
-		t.Fatalf("expected no error for missing file: %v", err)
-	}
-}
-
 func TestUseCreatesBackup(t *testing.T) {
 	mgr := newTestManager(t)
 	store := mgr.SettingsStoreDir()
-	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("current"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), mgr.ActiveSettingsPath(), []byte("current"), 0o644); err != nil {
 		t.Fatalf("write active: %v", err)
 	}
-	if err := afero.WriteFile(mgr.fs, filepath.Join(store, "work.json"), []byte("stored"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), filepath.Join(store, "work.json"), []byte("stored"), 0o644); err != nil {
 		t.Fatalf("write work: %v", err)
 	}
 	if err := mgr.Use("work"); err != nil {
 		t.Fatalf("use work: %v", err)
 	}
-	files, err := afero.ReadDir(mgr.fs, mgr.BackupDir())
+	files, err := afero.ReadDir(mgr.FileSystem(), mgr.BackupDir())
 	if err != nil {
 		t.Fatalf("read backups: %v", err)
 	}
@@ -531,16 +552,16 @@ func TestUseCreatesBackup(t *testing.T) {
 func TestSaveCreatesBackupOfTarget(t *testing.T) {
 	mgr := newTestManager(t)
 	store := mgr.SettingsStoreDir()
-	if err := afero.WriteFile(mgr.fs, filepath.Join(store, "personal.json"), []byte("old"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), filepath.Join(store, "personal.json"), []byte("old"), 0o644); err != nil {
 		t.Fatalf("write personal: %v", err)
 	}
-	if err := afero.WriteFile(mgr.fs, mgr.ActiveSettingsPath(), []byte("new"), 0o644); err != nil {
+	if err := afero.WriteFile(mgr.FileSystem(), mgr.ActiveSettingsPath(), []byte("new"), 0o644); err != nil {
 		t.Fatalf("write active: %v", err)
 	}
 	if err := mgr.Save("personal"); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	files, err := afero.ReadDir(mgr.fs, mgr.BackupDir())
+	files, err := afero.ReadDir(mgr.FileSystem(), mgr.BackupDir())
 	if err != nil {
 		t.Fatalf("read backups: %v", err)
 	}
@@ -552,7 +573,7 @@ func TestSaveCreatesBackupOfTarget(t *testing.T) {
 func TestPruneBackupsIgnoresDirectories(t *testing.T) {
 	mgr := newTestManager(t)
 	backup := mgr.BackupDir()
-	if err := mgr.fs.MkdirAll(filepath.Join(backup, "nested"), 0o755); err != nil {
+	if err := mgr.FileSystem().MkdirAll(filepath.Join(backup, "nested"), 0o755); err != nil {
 		t.Fatalf("mkdir nested: %v", err)
 	}
 	mgr.SetNow(func() time.Time { return time.Now() })
@@ -567,7 +588,7 @@ func TestPruneBackupsIgnoresDirectories(t *testing.T) {
 
 func TestInitInfraError(t *testing.T) {
 	roFs := afero.NewReadOnlyFs(afero.NewMemMapFs())
-	mgr := NewManager(roFs, "/home/ro")
+	mgr := NewManager(roFs, "/home/ro", nil)
 	if err := mgr.InitInfra(); err == nil {
 		t.Fatalf("expected error initializing read-only fs")
 	}

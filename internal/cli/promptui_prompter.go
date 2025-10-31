@@ -9,6 +9,11 @@ import (
 	"github.com/manifoldco/promptui"
 )
 
+const (
+	// defaultMenuSize is the number of items visible in selection menus
+	defaultMenuSize = 10
+)
+
 type PromptUI struct {
 	stdin  io.ReadCloser
 	stdout io.WriteCloser
@@ -43,7 +48,7 @@ func (p *PromptUI) Select(label string, items []string, defaultValue string) (in
 	selectPrompt := promptui.Select{
 		Label:     label,
 		Items:     items,
-		Size:      10,
+		Size:      defaultMenuSize,
 		HideHelp:  true,
 		CursorPos: cursor,
 		Stdin:     p.stdin,
